@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: phone-silent-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm run start -w @phone-silent/api
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WEB_ORIGIN
+        value: https://phonesilent.com
+      - key: WEB_ORIGINS
+        value: https://phonesilent.com,https://www.phonesilent.com,https://phonesilent.app,https://www.phonesilent.app,https://phone-silent.vercel.app
+      - key: DATABASE_PATH
+        value: /tmp/phone-silent.sqlite

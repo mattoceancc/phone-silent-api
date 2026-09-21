@@ -1,0 +1,13 @@
+{
+  "name": "phone-silent-api-deploy",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["packages/shared", "packages/api"],
+  "scripts": {
+    "start": "npm run start -w @phone-silent/api",
+    "start:api": "npm run start -w @phone-silent/api"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

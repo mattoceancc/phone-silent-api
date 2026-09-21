@@ -1,0 +1,33 @@
+# Optional Fly.io API host. From repo root:
+#   fly launch --no-deploy --copy-config
+#   fly volumes create phone_silent_data --size 1
+#   fly secrets set WEB_ORIGIN=https://phonesilent.com WEB_ORIGINS=https://phonesilent.com,https://www.phonesilent.com,https://phonesilent.app,https://www.phonesilent.app DATABASE_PATH=/data/phone-silent.sqlite
+#   fly deploy
+
+app = "phone-silent-api"
+primary_region = "dfw"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  WEB_ORIGIN = "https://phonesilent.com"
+  DATABASE_PATH = "/data/phone-silent.sqlite"
+
+[http_service]
+  internal_port = 43124
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.checks]
+    [http_service.checks.health]
+      path = "/health"
+      interval = "30s"
+      timeout = "5s"
+
+[mounts]
+  source = "phone_silent_data"
+  destination = "/data"
