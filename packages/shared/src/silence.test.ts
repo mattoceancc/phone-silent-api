@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { coveringCircle, distanceMeters } from "./geo";
-import { evaluateSilence, shouldSilence } from "./silence";
+import { evaluateSilence, shouldSilence, shouldSilenceAtAny } from "./silence";
 import type { Geofence, Schedule } from "./types";
 
 const GRACE: Geofence = {
@@ -323,6 +323,37 @@ describe("shouldSilence", () => {
         now,
         location: { lat: 30.28, lng: -97.7437 },
       }),
+    ).toBe(false);
+  });
+
+  it("applies any matching space without a visitor membership list", () => {
+    const now = chicago("2026-09-20T10:00:00");
+    const elsewhere: Geofence = { lat: 40.7, lng: -74.0, radiusMeters: 80 };
+    expect(
+      shouldSilenceAtAny([
+        {
+          geofence: elsewhere,
+          schedule: SUNDAY_MORNING,
+          now,
+          location: inside,
+        },
+        {
+          geofence: GRACE,
+          schedule: SUNDAY_MORNING,
+          now,
+          location: inside,
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      shouldSilenceAtAny([
+        {
+          geofence: elsewhere,
+          schedule: SUNDAY_MORNING,
+          now,
+          location: inside,
+        },
+      ]),
     ).toBe(false);
   });
 });

@@ -333,6 +333,7 @@ export function evaluateFor(
   lng: number,
   at: Date,
 ) {
+  // No membership filter: every active space in `venues` can silence the user.
   return venues.map((venue) => {
     const evaluation = evaluateSilence({
       geofence: {

@@ -14,7 +14,8 @@ import {
   createAdmin,
   verifyPassword,
 } from "./auth";
-import { seedIfEmpty, DEMO_EMAIL, DEMO_PASSWORD } from "./seed";
+import { seedIfEmpty } from "./seed";
+import { searchAddresses } from "./geo-search";
 import {
   applyWalkFence,
   countFreeSpaces,
@@ -137,7 +138,6 @@ app.get("/health", (c) =>
   c.json({
     ok: true,
     service: "phone-silent-api",
-    seedAdmin: DEMO_EMAIL,
     seededOnBoot: seed.seeded,
   }),
 );
@@ -451,19 +451,9 @@ app.post("/evaluate", async (c) => {
   if (!body.success) return c.json({ error: "lat, lng required" }, 400);
 
   const at = body.data.at ? new Date(body.data.at) : new Date();
-  const session = requireMobile(c);
-  let venues = session?.mobile_user_id ? joinedVenues(session.mobile_user_id) : [];
-
-  if (body.data.venueIds?.length) {
-    venues = body.data.venueIds
-      .map((venueId) => getVenue(venueId))
-      .filter((venue): venue is NonNullable<typeof venue> => Boolean(venue));
-  } else if (body.data.joinCode) {
-    const venue = getVenueByCode(body.data.joinCode);
-    venues = venue ? [venue] : [];
-  } else if (!venues.length) {
-    venues = listPublicVenues();
-  }
+  // Quiet spaces apply to every app user inside the fence — no join/membership.
+  // Optional joinCode / venueIds on the body are ignored (legacy visitor join).
+  const venues = nearbyVenues(body.data.lat, body.data.lng, 200);
 
   const results = evaluateFor(venues, body.data.lat, body.data.lng, at);
   const active = results.filter((item) => item.shouldSilence);
@@ -482,26 +472,8 @@ app.post("/evaluate", async (c) => {
 app.get("/geo/search", async (c) => {
   const q = c.req.query("q")?.trim();
   if (!q || q.length < 3) return c.json({ results: [] });
-  const url = new URL("https://nominatim.openstreetmap.org/search");
-  url.searchParams.set("format", "jsonv2");
-  url.searchParams.set("q", q);
-  url.searchParams.set("limit", "5");
-  const response = await fetch(url, {
-    headers: { "User-Agent": "PhoneSilentMVP/0.1 (local demo)" },
-  });
-  if (!response.ok) return c.json({ results: [] }, 502);
-  const data = (await response.json()) as {
-    display_name: string;
-    lat: string;
-    lon: string;
-  }[];
-  return c.json({
-    results: data.map((item) => ({
-      label: item.display_name,
-      lat: Number(item.lat),
-      lng: Number(item.lon),
-    })),
-  });
+  const results = await searchAddresses(q);
+  return c.json({ results });
 });
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));
@@ -513,5 +485,4 @@ app.onError((err, c) => {
 
 serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
   console.log(`Phone Silent API on http://127.0.0.1:${info.port}`);
-  console.log(`Demo admin: ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);
 });

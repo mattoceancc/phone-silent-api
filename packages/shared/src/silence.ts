@@ -65,3 +65,10 @@ export function reasonCopy(reason: SilenceEvaluation["reason"]): string {
       return "Inside the quiet zone.";
   }
 }
+
+/**
+ * Visitors do not join or opt into spaces. Any matching quiet space applies.
+ */
+export function shouldSilenceAtAny(inputs: ShouldSilenceInput[]): boolean {
+  return inputs.some(shouldSilence);
+}

@@ -16,13 +16,15 @@ export {
   parseHm,
   zonedParts,
 } from "./schedule";
-export { evaluateSilence, reasonCopy, shouldSilence } from "./silence";
+export { evaluateSilence, reasonCopy, shouldSilence, shouldSilenceAtAny } from "./silence";
 export {
   FREE_RADIUS_FEET,
   FREE_RADIUS_METERS,
   FREE_SPACE_LIMIT,
   PAID_MONTHLY_USD,
   PAID_YEARLY_USD,
+  SUPPORT_EMAIL,
+  SUPPORT_MAILTO,
   UPGRADE_BLURB,
   isPaidPlan,
 } from "./plans";
