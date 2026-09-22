@@ -36,6 +36,7 @@ import {
   recordEvent,
   updateVenue,
 } from "./venues";
+import { saveLaunchSignup } from "./notify";
 import { FREE_RADIUS_METERS, UPGRADE_BLURB } from "@phone-silent/shared";
 import { corsOrigin, isProduction } from "./origins";
 
@@ -80,6 +81,13 @@ const venueBody = z.object({
     .array(z.object({ lat: z.number().gte(-90).lte(90), lng: z.number().gte(-180).lte(180) }))
     .optional(),
   logoData: z.string().max(800_000).nullable().optional(),
+});
+
+const notifyBody = z.object({
+  email: z.string().trim().email().max(254),
+  name: z.string().trim().max(80).optional(),
+  role: z.enum(["guest", "venue"]).default("guest"),
+  message: z.string().trim().max(2000).optional(),
 });
 
 const seed = seedIfEmpty();
@@ -141,6 +149,25 @@ app.get("/health", (c) =>
     seededOnBoot: seed.seeded,
   }),
 );
+
+app.post("/notify", async (c) => {
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request" }, 400);
+  }
+  const body = notifyBody.safeParse(raw);
+  if (!body.success) return c.json({ error: "Invalid request" }, 400);
+  try {
+    const saved = saveLaunchSignup(body.data);
+    console.log("launch_signup", { id: saved.id, email: body.data.email, role: body.data.role });
+    return c.json({ ok: true, id: saved.id });
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: "Could not save your email" }, 500);
+  }
+});
 
 app.post("/auth/register", async (c) => {
   const body = z

@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS space_events (
 );
 `);
 
+db.exec(`
+CREATE TABLE IF NOT EXISTS launch_signups (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  role TEXT NOT NULL DEFAULT 'guest',
+  message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`);
+
 function columnNames(table: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   return rows.map((row) => row.name);
