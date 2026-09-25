@@ -70,6 +70,25 @@ CREATE TABLE IF NOT EXISTS memberships (
   FOREIGN KEY (mobile_user_id) REFERENCES mobile_users(id),
   FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS launch_signups (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  role TEXT NOT NULL,
+  message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS support_messages (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `);
 
 db.exec(`
@@ -80,18 +99,6 @@ CREATE TABLE IF NOT EXISTS space_events (
   day TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
-);
-`);
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS launch_signups (
-  id TEXT PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
-  name TEXT,
-  role TEXT NOT NULL DEFAULT 'guest',
-  message TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
 );
 `);
 

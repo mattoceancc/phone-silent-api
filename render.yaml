@@ -16,3 +16,9 @@ services:
         value: https://phonesilent.com,https://www.phonesilent.com,https://phonesilent.app,https://www.phonesilent.app,https://phone-silent.vercel.app
       - key: DATABASE_PATH
         value: /tmp/phone-silent.sqlite
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SUPPORT_TO_EMAIL
+        sync: false
+      - key: SUPPORT_FROM_EMAIL
+        sync: false

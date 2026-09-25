@@ -36,9 +36,12 @@ import {
   recordEvent,
   updateVenue,
 } from "./venues";
-import { saveLaunchSignup } from "./notify";
 import { FREE_RADIUS_METERS, UPGRADE_BLURB } from "@phone-silent/shared";
+import { sendSupportEmail } from "./email";
+import { saveLaunchSignup } from "./notify";
 import { corsOrigin, isProduction } from "./origins";
+import { clientIp, rateLimit } from "./rate-limit";
+import { SUPPORT_TOPICS, saveSupportMessage, type SupportTopic } from "./support";
 
 const PORT = Number(process.env.PORT ?? 43124);
 const COOKIE = "ps_session";
@@ -81,13 +84,6 @@ const venueBody = z.object({
     .array(z.object({ lat: z.number().gte(-90).lte(90), lng: z.number().gte(-180).lte(180) }))
     .optional(),
   logoData: z.string().max(800_000).nullable().optional(),
-});
-
-const notifyBody = z.object({
-  email: z.string().trim().email().max(254),
-  name: z.string().trim().max(80).optional(),
-  role: z.enum(["guest", "venue"]).default("guest"),
-  message: z.string().trim().max(2000).optional(),
 });
 
 const seed = seedIfEmpty();
@@ -150,22 +146,152 @@ app.get("/health", (c) =>
   }),
 );
 
+const honeypot = z.string().max(500).optional();
+
+const notifyBody = z.object({
+  email: z.string().trim().email().max(254),
+  name: z.string().trim().max(80).optional(),
+  role: z.enum(["guest", "venue"]).optional(),
+  message: z.string().trim().max(2000).optional(),
+  ps_hp: honeypot,
+});
+
+function tooMany(c: Context, bucket: string) {
+  const limit = rateLimit(`${bucket}:${clientIp((name) => c.req.header(name))}`);
+  if (limit.ok) return null;
+  c.header("Retry-After", String(limit.retryAfterSec));
+  return c.json(
+    { error: "Too many messages. Please wait a few minutes and try again." },
+    429,
+  );
+}
+
 app.post("/notify", async (c) => {
-  let raw: unknown;
+  let json: unknown;
   try {
-    raw = await c.req.json();
+    json = await c.req.json();
   } catch {
     return c.json({ error: "Invalid request" }, 400);
   }
-  const body = notifyBody.safeParse(raw);
-  if (!body.success) return c.json({ error: "Invalid request" }, 400);
+  const body = notifyBody.safeParse(json);
+  if (!body.success) {
+    const emailIssue = body.error.issues.some((issue) => issue.path[0] === "email");
+    return c.json(
+      {
+        error: emailIssue
+          ? "Enter a valid email address."
+          : "Check the form and try again.",
+      },
+      400,
+    );
+  }
+
+  const limited = tooMany(c, "notify");
+  if (limited) return limited;
+
+  if (body.data.ps_hp?.trim()) {
+    return c.json({ ok: true });
+  }
+
+  const name = body.data.name ? body.data.name : null;
+  const message = body.data.message ? body.data.message : null;
+  const role = body.data.role ?? "guest";
   try {
-    const saved = saveLaunchSignup(body.data);
-    console.log("launch_signup", { id: saved.id, email: body.data.email, role: body.data.role });
+    const saved = saveLaunchSignup({
+      email: body.data.email,
+      name,
+      role,
+      message,
+    });
+    const mailed = await sendSupportEmail({
+      kind: "notify",
+      name,
+      email: body.data.email,
+      topic: null,
+      role,
+      message,
+    });
+    console.info(
+      JSON.stringify({
+        event: "launch_signup",
+        id: saved.id,
+        email: body.data.email.trim().toLowerCase(),
+        role,
+        emailed: mailed.sent,
+      }),
+    );
     return c.json({ ok: true, id: saved.id });
   } catch (err) {
     console.error(err);
-    return c.json({ error: "Could not save your email" }, 500);
+    return c.json({ error: "Could not save your email. Try again in a moment." }, 500);
+  }
+});
+
+const supportBody = z.object({
+  name: z.string().trim().min(1).max(80),
+  email: z.string().trim().email().max(254),
+  message: z.string().trim().min(1).max(4000),
+  topic: z.enum(SUPPORT_TOPICS).optional(),
+  ps_hp: honeypot,
+});
+
+app.post("/support", async (c) => {
+  let json: unknown;
+  try {
+    json = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request" }, 400);
+  }
+  const body = supportBody.safeParse(json);
+  if (!body.success) {
+    const field = body.error.issues[0]?.path[0];
+    const error =
+      field === "email"
+        ? "Enter a valid email address."
+        : field === "name"
+          ? "Name is required."
+          : field === "message"
+            ? "Message is required."
+            : "Check the form and try again.";
+    return c.json({ error }, 400);
+  }
+
+  const limited = tooMany(c, "support");
+  if (limited) return limited;
+
+  if (body.data.ps_hp?.trim()) {
+    return c.json({ ok: true });
+  }
+
+  const topic: SupportTopic = body.data.topic ?? "General";
+  try {
+    const saved = saveSupportMessage({
+      name: body.data.name,
+      email: body.data.email,
+      topic,
+      message: body.data.message,
+    });
+    const mailed = await sendSupportEmail({
+      kind: "support",
+      name: body.data.name,
+      email: body.data.email,
+      topic,
+      role: null,
+      message: body.data.message,
+    });
+    console.info(
+      JSON.stringify({
+        event: "support_message",
+        id: saved.id,
+        email: body.data.email.trim().toLowerCase(),
+        topic,
+        emailed: mailed.sent,
+      }),
+    );
+    return c.json({ ok: true, id: saved.id });
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: "Could not send your message. Try again in a moment." }, 500);
   }
 });
 
