@@ -1,5 +1,7 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import { db, id, nowIso } from "./db";
+
+const VERIFY_HOURS = 24;
 
 const SESSION_DAYS = 14;
 
@@ -58,26 +60,194 @@ export function getSession(token: string | undefined | null): SessionRow | null 
   return row;
 }
 
-export function createAdmin(email: string, name: string, password: string) {
+export type AdminPublic = {
+  id: string;
+  email: string;
+  name: string;
+  firstName: string;
+  lastName: string;
+  emailVerified: boolean;
+};
+
+type AdminRow = {
+  id: string;
+  email: string;
+  name: string;
+  first_name: string;
+  last_name: string;
+  password_hash: string;
+  email_verified_at: string | null;
+};
+
+function displayName(firstName: string, lastName: string): string {
+  return `${firstName} ${lastName}`.trim().slice(0, 80);
+}
+
+export function toPublicAdmin(row: {
+  id: string;
+  email: string;
+  name: string;
+  first_name: string;
+  last_name: string;
+  email_verified_at: string | null;
+}): AdminPublic {
+  const firstName = row.first_name?.trim() || row.name.trim();
+  const lastName = row.last_name?.trim() || "";
+  return {
+    id: row.id,
+    email: row.email,
+    name: displayName(firstName, lastName) || row.name,
+    firstName,
+    lastName,
+    emailVerified: Boolean(row.email_verified_at),
+  };
+}
+
+export function createAdmin(input: {
+  email: string;
+  firstName: string;
+  lastName: string;
+  password: string;
+}) {
   const adminId = id("adm");
+  const firstName = input.firstName.trim();
+  const lastName = input.lastName.trim();
   db.prepare(
-    `INSERT INTO admins (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)`,
-  ).run(adminId, email.toLowerCase().trim(), name, hashPassword(password), nowIso());
+    `INSERT INTO admins
+      (id, email, name, first_name, last_name, password_hash, created_at, email_verified_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+  ).run(
+    adminId,
+    input.email.toLowerCase().trim(),
+    displayName(firstName, lastName),
+    firstName,
+    lastName,
+    hashPassword(input.password),
+    nowIso(),
+  );
   return adminId;
 }
 
 export function findAdminByEmail(email: string) {
   return db
-    .prepare(`SELECT id, email, name, password_hash FROM admins WHERE email = ?`)
-    .get(email.toLowerCase().trim()) as
-    | { id: string; email: string; name: string; password_hash: string }
-    | undefined;
+    .prepare(
+      `SELECT id, email, name, first_name, last_name, password_hash, email_verified_at
+       FROM admins WHERE email = ?`,
+    )
+    .get(email.toLowerCase().trim()) as AdminRow | undefined;
 }
 
-export function findAdminById(adminId: string) {
-  return db
-    .prepare(`SELECT id, email, name FROM admins WHERE id = ?`)
-    .get(adminId) as { id: string; email: string; name: string } | undefined;
+export function findAdminById(adminId: string): AdminPublic | undefined {
+  const row = db
+    .prepare(
+      `SELECT id, email, name, first_name, last_name, password_hash, email_verified_at
+       FROM admins WHERE id = ?`,
+    )
+    .get(adminId) as AdminRow | undefined;
+  return row ? toPublicAdmin(row) : undefined;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function hashesEqual(storedHex: string, candidateHex: string): boolean {
+  const stored = Buffer.from(storedHex, "hex");
+  const candidate = Buffer.from(candidateHex, "hex");
+  if (stored.length === 0 || stored.length !== candidate.length) return false;
+  return timingSafeEqual(stored, candidate);
+}
+
+export function issueEmailVerification(adminId: string): {
+  token: string;
+  code: string;
+  expiresAt: string;
+} {
+  const token = randomBytes(32).toString("hex");
+  const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const created = nowIso();
+  const expiresAt = new Date(Date.now() + VERIFY_HOURS * 60 * 60 * 1000).toISOString();
+  db.prepare(`DELETE FROM email_verifications WHERE admin_id = ? AND used_at IS NULL`).run(
+    adminId,
+  );
+  db.prepare(
+    `INSERT INTO email_verifications
+      (id, admin_id, token_hash, code_hash, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id("emv"), adminId, sha256(token), sha256(code), created, expiresAt);
+  return { token, code, expiresAt };
+}
+
+function activateSpacesWaitingOnEmail(adminId: string): void {
+  const verifiedAt = nowIso();
+  db.prepare(
+    `UPDATE admins SET email_verified_at = ? WHERE id = ? AND email_verified_at IS NULL`,
+  ).run(verifiedAt, adminId);
+  db.prepare(
+    `UPDATE venues SET active = 1, activate_on_verify = 0
+     WHERE owner_id = ? AND activate_on_verify = 1`,
+  ).run(adminId);
+}
+
+type VerificationRow = {
+  id: string;
+  admin_id: string;
+  token_hash: string;
+  code_hash: string;
+  expires_at: string;
+  used_at: string | null;
+};
+
+export function consumeEmailVerification(input: {
+  token?: string;
+  adminId?: string;
+  code?: string;
+}): { ok: true; adminId: string } | { ok: false; error: string } {
+  if (input.token) {
+    const row = db
+      .prepare(
+        `SELECT id, admin_id, token_hash, code_hash, expires_at, used_at
+         FROM email_verifications WHERE token_hash = ?`,
+      )
+      .get(sha256(input.token)) as VerificationRow | undefined;
+    if (!row) return { ok: false, error: "That verification link is invalid." };
+    if (row.used_at) {
+      const admin = findAdminById(row.admin_id);
+      if (admin?.emailVerified) return { ok: true, adminId: row.admin_id };
+      return { ok: false, error: "That verification link was already used." };
+    }
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      return { ok: false, error: "That verification link has expired. Request a new one." };
+    }
+    db.prepare(`UPDATE email_verifications SET used_at = ? WHERE id = ?`).run(nowIso(), row.id);
+    activateSpacesWaitingOnEmail(row.admin_id);
+    return { ok: true, adminId: row.admin_id };
+  }
+
+  const code = input.code?.trim();
+  if (!input.adminId || !code) {
+    return { ok: false, error: "Enter the verification code from your email." };
+  }
+  const admin = findAdminById(input.adminId);
+  if (admin?.emailVerified) return { ok: true, adminId: input.adminId };
+  const row = db
+    .prepare(
+      `SELECT id, admin_id, token_hash, code_hash, expires_at, used_at
+       FROM email_verifications
+       WHERE admin_id = ? AND used_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(input.adminId) as VerificationRow | undefined;
+  if (!row || new Date(row.expires_at).getTime() < Date.now()) {
+    return { ok: false, error: "That code is incorrect or expired." };
+  }
+  if (!hashesEqual(row.code_hash, sha256(code))) {
+    return { ok: false, error: "That code is incorrect or expired." };
+  }
+  db.prepare(`UPDATE email_verifications SET used_at = ? WHERE id = ?`).run(nowIso(), row.id);
+  activateSpacesWaitingOnEmail(input.adminId);
+  return { ok: true, adminId: input.adminId };
 }
 
 export function createMobileUser(): string {

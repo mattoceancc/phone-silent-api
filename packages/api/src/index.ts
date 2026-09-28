@@ -1,10 +1,12 @@
 import type { Context } from "hono";
+import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import {
+  consumeEmailVerification,
   createMobileUser,
   createSession,
   destroySession,
@@ -12,6 +14,8 @@ import {
   findAdminById,
   getSession,
   createAdmin,
+  issueEmailVerification,
+  toPublicAdmin,
   verifyPassword,
 } from "./auth";
 import { seedIfEmpty } from "./seed";
@@ -37,7 +41,12 @@ import {
   updateVenue,
 } from "./venues";
 import { FREE_RADIUS_METERS, UPGRADE_BLURB } from "@phone-silent/shared";
-import { sendSupportEmail } from "./email";
+import {
+  sendRegistrationConfirmation,
+  sendSupportEmail,
+  sendVerificationEmail,
+  verificationLink,
+} from "./email";
 import { saveLaunchSignup } from "./notify";
 import { corsOrigin, isProduction } from "./origins";
 import { clientIp, rateLimit } from "./rate-limit";
@@ -120,6 +129,16 @@ function requireAdmin(c: Context) {
   if (!session?.admin_id) return null;
   const admin = findAdminById(session.admin_id);
   return admin ? { session, admin } : null;
+}
+
+function manageBlocked(c: Context, emailVerified: boolean) {
+  if (emailVerified) return null;
+  return c.json({ error: "Verify your email before you can manage this space." }, 403);
+}
+
+function verificationDelivery(sent: boolean, code: string, url: string) {
+  if (sent || isProduction()) return { sent };
+  return { sent, preview: { code, url } };
 }
 
 function requireMobile(c: Context) {
@@ -295,24 +314,112 @@ app.post("/support", async (c) => {
   }
 });
 
+const personName = z.string().trim().min(1).max(40);
+
 app.post("/auth/register", async (c) => {
   const body = z
     .object({
       email: z.string().email(),
-      name: z.string().trim().min(2).max(80),
+      firstName: personName,
+      lastName: personName,
       password: z.string().min(8).max(100),
     })
     .safeParse(await c.req.json());
-  if (!body.success) return c.json({ error: "Invalid registration" }, 400);
+  if (!body.success) {
+    const field = body.error.issues[0]?.path[0];
+    const error =
+      field === "email"
+        ? "Enter a valid email address."
+        : field === "firstName"
+          ? "First name is required."
+          : field === "lastName"
+            ? "Last name is required."
+            : field === "password"
+              ? "Password must be at least 8 characters."
+              : "Check the form and try again.";
+    return c.json({ error }, 400);
+  }
   if (findAdminByEmail(body.data.email)) {
     return c.json({ error: "An account with that email already exists" }, 409);
   }
-  const adminId = createAdmin(body.data.email, body.data.name, body.data.password);
+  const limited = tooMany(c, "register");
+  if (limited) return limited;
+  const adminId = createAdmin({
+    email: body.data.email,
+    firstName: body.data.firstName,
+    lastName: body.data.lastName,
+    password: body.data.password,
+  });
   const token = createSession({ adminId });
   setSessionCookie(c, token);
+  const issued = issueEmailVerification(adminId);
+  const url = verificationLink(issued.token);
+  const mailed = await sendVerificationEmail({
+    to: body.data.email.toLowerCase().trim(),
+    firstName: body.data.firstName,
+    code: issued.code,
+    url,
+  });
+  const admin = findAdminById(adminId);
   return c.json({
     token,
-    admin: { id: adminId, email: body.data.email.toLowerCase(), name: body.data.name },
+    admin,
+    verification: verificationDelivery(mailed.sent, issued.code, url),
+  });
+});
+
+app.post("/auth/verify-email", async (c) => {
+  const body = z
+    .object({
+      token: z.string().trim().min(20).max(200).optional(),
+      code: z.string().trim().min(4).max(12).optional(),
+    })
+    .safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success || (!body.data.token && !body.data.code)) {
+    return c.json(
+      { error: "Enter the verification code or open the link from your email." },
+      400,
+    );
+  }
+  const limited = tooMany(c, "verify-email");
+  if (limited) return limited;
+  const result = body.data.token
+    ? consumeEmailVerification({ token: body.data.token })
+    : (() => {
+        const auth = requireAdmin(c);
+        if (!auth) return { ok: false as const, error: "Sign in required", status: 401 };
+        return consumeEmailVerification({ adminId: auth.admin.id, code: body.data.code });
+      })();
+  if (!result.ok) {
+    const status = "status" in result && result.status ? result.status : 400;
+    return c.json({ error: result.error }, status);
+  }
+  const admin = findAdminById(result.adminId);
+  if (!admin) return c.json({ error: "Account not found" }, 404);
+  const token = createSession({ adminId: admin.id });
+  setSessionCookie(c, token);
+  return c.json({ token, admin });
+});
+
+app.post("/auth/resend-verification", async (c) => {
+  const auth = requireAdmin(c);
+  if (!auth) return c.json({ error: "Sign in required" }, 401);
+  if (auth.admin.emailVerified) {
+    return c.json({ admin: auth.admin, verification: { sent: false } });
+  }
+  const limited = tooMany(c, "resend-verification");
+  if (limited) return limited;
+  const issued = issueEmailVerification(auth.admin.id);
+  const url = verificationLink(issued.token);
+  const mailed = await sendVerificationEmail({
+    to: auth.admin.email,
+    firstName: auth.admin.firstName,
+    code: issued.code,
+    url,
+  });
+  return c.json({
+    admin: auth.admin,
+    verification: verificationDelivery(mailed.sent, issued.code, url),
   });
 });
 
@@ -332,7 +439,7 @@ app.post("/auth/login", async (c) => {
   setSessionCookie(c, token);
   return c.json({
     token,
-    admin: { id: admin.id, email: admin.email, name: admin.name },
+    admin: toPublicAdmin(admin),
   });
 });
 
@@ -392,6 +499,7 @@ app.post("/admin/venues", async (c) => {
     return c.json({ error: "That join code is already in use" }, 409);
   }
   const paid = body.data.plan === "paid";
+  const wantsActive = body.data.active ?? true;
   try {
     const venue = createVenue({
       ownerId: auth.admin.id,
@@ -402,12 +510,19 @@ app.post("/admin/venues", async (c) => {
       radiusMeters: body.data.radiusMeters,
       timezone: body.data.timezone,
       joinCode,
-      active: body.data.active ?? true,
+      active: auth.admin.emailVerified ? wantsActive : false,
+      activateOnVerify: !auth.admin.emailVerified && wantsActive,
       plan: paid ? "paid" : "free",
       billingInterval: paid ? (body.data.billingInterval ?? "month") : null,
       windows: paid ? (body.data.windows ?? []) : [],
       polygon: paid ? (body.data.polygon ?? null) : null,
       logoData: paid ? (body.data.logoData ?? null) : null,
+    });
+    await sendRegistrationConfirmation({
+      to: auth.admin.email,
+      firstName: auth.admin.firstName,
+      spaceName: venue.name,
+      active: venue.active,
     });
     return c.json({ venue }, 201);
   } catch (err) {
@@ -435,6 +550,8 @@ app.patch("/admin/venues/:id", async (c) => {
   if (!existing) return c.json({ error: "Space not found" }, 404);
   const owned = listVenuesForOwner(auth.admin.id).some((item) => item.id === existing.id);
   if (!owned) return c.json({ error: "Space not found" }, 404);
+  const blocked = manageBlocked(c, auth.admin.emailVerified);
+  if (blocked) return blocked;
   const body = venueBody.partial().safeParse(await c.req.json());
   if (!body.success) {
     return c.json({ error: "Check space details", details: body.error.flatten() }, 400);
@@ -483,6 +600,8 @@ app.post("/admin/venues/:id/upgrade", async (c) => {
   if (!listVenuesForOwner(auth.admin.id).some((item) => item.id === existing.id)) {
     return c.json({ error: "Space not found" }, 404);
   }
+  const blocked = manageBlocked(c, auth.admin.emailVerified);
+  if (blocked) return blocked;
   const body = z
     .object({ interval: z.enum(["month", "year"]).default("month") })
     .safeParse((await c.req.json().catch(() => ({}))) ?? {});
@@ -508,6 +627,8 @@ app.post("/admin/venues/:id/fence-walk", async (c) => {
   if (!listVenuesForOwner(auth.admin.id).some((item) => item.id === existing.id)) {
     return c.json({ error: "Space not found" }, 404);
   }
+  const blocked = manageBlocked(c, auth.admin.emailVerified);
+  if (blocked) return blocked;
   if (existing.plan !== "paid") {
     return c.json({ error: UPGRADE_BLURB, upgrade: true }, 402);
   }
@@ -537,6 +658,8 @@ app.get("/admin/venues/:id/metrics", (c) => {
   if (!listVenuesForOwner(auth.admin.id).some((item) => item.id === existing.id)) {
     return c.json({ error: "Space not found" }, 404);
   }
+  const blocked = manageBlocked(c, auth.admin.emailVerified);
+  if (blocked) return blocked;
   if (existing.plan !== "paid") {
     return c.json({ error: UPGRADE_BLURB, upgrade: true }, 402);
   }
@@ -636,6 +759,13 @@ app.onError((err, c) => {
   return c.json({ error: "Server error" }, 500);
 });
 
-serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
-  console.log(`Phone Silent API on http://127.0.0.1:${info.port}`);
-});
+const invokedDirectly =
+  process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
+    console.log(`Phone Silent API on http://127.0.0.1:${info.port}`);
+  });
+}
+
+export { app };

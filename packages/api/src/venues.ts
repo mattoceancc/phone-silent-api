@@ -26,6 +26,7 @@ export type VenueRow = {
   polygon: string | null;
   logo_data: string | null;
   billing_interval: string | null;
+  activate_on_verify: number;
 };
 
 export type PublicVenue = {
@@ -45,6 +46,8 @@ export type PublicVenue = {
   polygon: Coordinates[] | null;
   hasLogo: boolean;
   billingInterval: "month" | "year" | null;
+  /** Admin who registered the space and manages its settings. Stored as owner_id. */
+  accountManagerId: string;
 };
 
 function parsePolygon(raw: string | null): Coordinates[] | null {
@@ -90,6 +93,7 @@ export function toPublic(row: VenueRow): PublicVenue {
       row.billing_interval === "year" || row.billing_interval === "month"
         ? row.billing_interval
         : null,
+    accountManagerId: row.owner_id,
   };
 }
 
@@ -182,6 +186,7 @@ export function createVenue(input: {
   windows?: QuietWindow[];
   polygon?: Coordinates[] | null;
   logoData?: string | null;
+  activateOnVerify?: boolean;
 }): PublicVenue {
   const plan: SpacePlan = input.plan === "paid" ? "paid" : "free";
   if (plan === "free" && countFreeSpaces(input.ownerId) >= FREE_SPACE_LIMIT) {
@@ -193,8 +198,8 @@ export function createVenue(input: {
   const radius = plan === "free" ? FREE_RADIUS_METERS : (input.radiusMeters ?? 80);
   db.prepare(
     `INSERT INTO venues
-      (id, owner_id, name, address, lat, lng, radius_meters, timezone, join_code, active, created_at, plan, polygon, billing_interval, logo_data)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, owner_id, name, address, lat, lng, radius_meters, timezone, join_code, active, created_at, plan, polygon, billing_interval, logo_data, activate_on_verify)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     venueId,
     input.ownerId,
@@ -211,6 +216,7 @@ export function createVenue(input: {
     plan === "paid" && input.polygon ? JSON.stringify(input.polygon) : null,
     plan === "paid" ? (input.billingInterval ?? "month") : null,
     plan === "paid" ? (input.logoData ?? null) : null,
+    input.activateOnVerify ? 1 : 0,
   );
   if (plan === "paid" && input.windows?.length) {
     replaceWindows(venueId, input.windows);
