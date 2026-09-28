@@ -5,7 +5,7 @@ export const PAID_MONTHLY_USD = 39;
 export const PAID_YEARLY_USD = 390;
 
 export const UPGRADE_BLURB =
-  "Custom fence, schedules, branding & metrics — $39/mo per space";
+  "Upgrade for a custom boundary, quiet hours, your logo, and visitor counts.";
 
 export const SUPPORT_EMAIL = "support@phonesilent.com";
 export const SUPPORT_MAILTO = `mailto:${SUPPORT_EMAIL}`;

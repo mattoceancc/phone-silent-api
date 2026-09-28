@@ -89,6 +89,17 @@ CREATE TABLE IF NOT EXISTS support_messages (
   message TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id TEXT PRIMARY KEY,
+  admin_id TEXT NOT NULL,
+  token_hash TEXT UNIQUE NOT NULL,
+  code_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  FOREIGN KEY (admin_id) REFERENCES admins(id)
+);
 `);
 
 db.exec(`
@@ -107,17 +118,45 @@ function columnNames(table: string): string[] {
   return rows.map((row) => row.name);
 }
 
-function addColumn(table: string, definition: string): void {
+function addColumn(table: string, definition: string): boolean {
   const name = definition.split(/\s+/)[0];
-  if (!columnNames(table).includes(name)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
-  }
+  if (columnNames(table).includes(name)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  return true;
 }
 
 addColumn("venues", "plan TEXT NOT NULL DEFAULT 'free'");
 addColumn("venues", "polygon TEXT");
 addColumn("venues", "logo_data TEXT");
 addColumn("venues", "billing_interval TEXT");
+addColumn("venues", "activate_on_verify INTEGER NOT NULL DEFAULT 0");
+addColumn("admins", "first_name TEXT NOT NULL DEFAULT ''");
+addColumn("admins", "last_name TEXT NOT NULL DEFAULT ''");
+const addedEmailVerified = addColumn("admins", "email_verified_at TEXT");
+if (addedEmailVerified) {
+  // Accounts created before verification existed are already in use.
+  db.exec(`UPDATE admins SET email_verified_at = created_at WHERE email_verified_at IS NULL`);
+}
+
+function backfillAdminNames(): void {
+  const rows = db
+    .prepare(
+      `SELECT id, name FROM admins WHERE first_name = '' AND last_name = '' AND name != ''`,
+    )
+    .all() as { id: string; name: string }[];
+  const update = db.prepare(
+    `UPDATE admins SET first_name = ?, last_name = ? WHERE id = ?`,
+  );
+  for (const row of rows) {
+    const parts = row.name.trim().split(/\s+/).filter(Boolean);
+    const firstName = parts[0] ?? "";
+    const lastName = parts.slice(1).join(" ");
+    if (!firstName && !lastName) continue;
+    update.run(firstName, lastName, row.id);
+  }
+}
+
+backfillAdminNames();
 
 export function nowIso(): string {
   return new Date().toISOString();
