@@ -130,6 +130,7 @@ addColumn("venues", "polygon TEXT");
 addColumn("venues", "logo_data TEXT");
 addColumn("venues", "billing_interval TEXT");
 addColumn("venues", "activate_on_verify INTEGER NOT NULL DEFAULT 0");
+addColumn("venues", "claim_released INTEGER NOT NULL DEFAULT 0");
 addColumn("admins", "first_name TEXT NOT NULL DEFAULT ''");
 addColumn("admins", "last_name TEXT NOT NULL DEFAULT ''");
 const addedEmailVerified = addColumn("admins", "email_verified_at TEXT");

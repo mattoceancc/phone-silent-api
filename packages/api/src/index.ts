@@ -51,6 +51,12 @@ import { saveLaunchSignup } from "./notify";
 import { corsOrigin, isProduction } from "./origins";
 import { clientIp, rateLimit } from "./rate-limit";
 import { SUPPORT_TOPICS, saveSupportMessage, type SupportTopic } from "./support";
+import { evaluateSpaceClaim, SpaceClaimedError } from "./space-claim";
+import {
+  listSpacesForSiteAdmin,
+  reassignSpaceOwner,
+  resetSpaceOwner,
+} from "./site-admins";
 
 const PORT = Number(process.env.PORT ?? 43124);
 const COOKIE = "ps_session";
@@ -526,6 +532,12 @@ app.post("/admin/venues", async (c) => {
     });
     return c.json({ venue }, 201);
   } catch (err) {
+    if (err instanceof SpaceClaimedError) {
+      return c.json(
+        { error: err.message, ownerEmail: err.ownerEmail, supportUrl: err.supportUrl },
+        409,
+      );
+    }
     return c.json(
       { error: err instanceof Error ? err.message : UPGRADE_BLURB, upgrade: true },
       402,
@@ -558,6 +570,24 @@ app.patch("/admin/venues/:id", async (c) => {
   }
   if (body.data.joinCode && getVenueByCode(body.data.joinCode)?.id !== existing.id) {
     return c.json({ error: "That join code is already in use" }, 409);
+  }
+  const claim = evaluateSpaceClaim({
+    ownerId: auth.admin.id,
+    lat: body.data.lat ?? existing.lat,
+    lng: body.data.lng ?? existing.lng,
+    address: body.data.address ?? existing.address,
+    exceptVenueId: existing.id,
+    adoptReleased: false,
+  });
+  if (claim.kind === "blocked") {
+    return c.json(
+      {
+        error: new SpaceClaimedError(claim.ownerEmail, claim.supportUrl).message,
+        ownerEmail: claim.ownerEmail,
+        supportUrl: claim.supportUrl,
+      },
+      409,
+    );
   }
   if (existing.plan === "free") {
     if (
@@ -750,6 +780,42 @@ app.get("/geo/search", async (c) => {
   if (!q || q.length < 3) return c.json({ results: [] });
   const results = await searchAddresses(q);
   return c.json({ results });
+});
+
+function requireSiteAdmin(c: Context) {
+  const auth = requireAdmin(c);
+  if (!auth) return c.json({ error: "Sign in required" }, 401);
+  if (!auth.admin.siteAdmin) {
+    return c.json({ error: "This page is only for the Phone Silent site owner." }, 403);
+  }
+  return null;
+}
+
+app.get("/site-admin/venues", (c) => {
+  const denied = requireSiteAdmin(c);
+  if (denied) return denied;
+  const q = c.req.query("q") ?? "";
+  return c.json({ venues: listSpacesForSiteAdmin(q) });
+});
+
+app.post("/site-admin/venues/:id/reset-owner", (c) => {
+  const denied = requireSiteAdmin(c);
+  if (denied) return denied;
+  const space = resetSpaceOwner(c.req.param("id"));
+  if (!space) return c.json({ error: "Space not found" }, 404);
+  return c.json({ venue: space });
+});
+
+app.post("/site-admin/venues/:id/owner", async (c) => {
+  const denied = requireSiteAdmin(c);
+  if (denied) return denied;
+  const body = z
+    .object({ email: z.string().trim().email().max(254) })
+    .safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) return c.json({ error: "Enter the account email to assign." }, 400);
+  const result = reassignSpaceOwner(c.req.param("id"), body.data.email);
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json({ venue: result.space });
 });
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));

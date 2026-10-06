@@ -22,3 +22,5 @@ services:
         sync: false
       - key: SUPPORT_FROM_EMAIL
         sync: false
+      - key: SITE_ADMIN_EMAILS
+        sync: false
