@@ -187,9 +187,9 @@ function activateSpacesWaitingOnEmail(adminId: string): void {
     `UPDATE admins SET email_verified_at = ? WHERE id = ? AND email_verified_at IS NULL`,
   ).run(verifiedAt, adminId);
   db.prepare(
-    `UPDATE venues SET active = 1, activate_on_verify = 0
+    `UPDATE venues SET active = 1, activate_on_verify = 0, updated_at = ?
      WHERE owner_id = ? AND activate_on_verify = 1`,
-  ).run(adminId);
+  ).run(verifiedAt, adminId);
 }
 
 type VerificationRow = {

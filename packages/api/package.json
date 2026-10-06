@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "seed": "tsx src/seed.ts",
-    "test": "tsx --test src/email.test.ts src/register.test.ts src/space-claim.test.ts src/geo-search.test.ts"
+    "test": "tsx --test src/email.test.ts src/register.test.ts src/space-claim.test.ts src/geo-search.test.ts src/site-admin-spaces.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.1",
