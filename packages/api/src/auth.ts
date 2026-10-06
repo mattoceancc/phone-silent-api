@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import { db, id, nowIso } from "./db";
+import { isSiteAdmin } from "./site-admins";
 
 const VERIFY_HOURS = 24;
 
@@ -67,6 +68,7 @@ export type AdminPublic = {
   firstName: string;
   lastName: string;
   emailVerified: boolean;
+  siteAdmin: boolean;
 };
 
 type AdminRow = {
@@ -100,6 +102,7 @@ export function toPublicAdmin(row: {
     firstName,
     lastName,
     emailVerified: Boolean(row.email_verified_at),
+    siteAdmin: isSiteAdmin(row.email),
   };
 }
 

@@ -144,7 +144,13 @@ describe("register a quiet space", { concurrency: 1 }, () => {
       const created = await call("/admin/venues", {
         method: "POST",
         token: String(verified.data.token),
-        body: { ...space, name: "Compiler hall" },
+        body: {
+          ...space,
+          name: "Compiler hall",
+          address: "1 Broadway, New York, NY",
+          lat: 40.705,
+          lng: -74.013,
+        },
       });
       assert.equal(created.status, 201);
       assert.equal((created.data.venue as Json).active, true);

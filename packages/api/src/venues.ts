@@ -7,6 +7,7 @@ import {
   reasonCopy,
 } from "@phone-silent/shared";
 import { db, id, nowIso } from "./db";
+import { evaluateSpaceClaim, SpaceClaimedError } from "./space-claim";
 
 export type SpacePlan = "free" | "paid";
 
@@ -27,6 +28,7 @@ export type VenueRow = {
   logo_data: string | null;
   billing_interval: string | null;
   activate_on_verify: number;
+  claim_released: number;
 };
 
 export type PublicVenue = {
@@ -125,9 +127,19 @@ export function listVenuesForOwner(ownerId: string): PublicVenue[] {
 }
 
 export function countFreeSpaces(ownerId: string): number {
-  const row = db
-    .prepare(`SELECT COUNT(*) AS n FROM venues WHERE owner_id = ? AND plan = 'free'`)
-    .get(ownerId) as { n: number | bigint };
+  return freeSpaceCount(ownerId);
+}
+
+function freeSpaceCount(ownerId: string, exceptVenueId?: string): number {
+  const row = exceptVenueId
+    ? (db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM venues WHERE owner_id = ? AND plan = 'free' AND id != ?`,
+        )
+        .get(ownerId, exceptVenueId) as { n: number | bigint })
+    : (db
+        .prepare(`SELECT COUNT(*) AS n FROM venues WHERE owner_id = ? AND plan = 'free'`)
+        .get(ownerId) as { n: number | bigint });
   return Number(row.n);
 }
 
@@ -188,14 +200,61 @@ export function createVenue(input: {
   logoData?: string | null;
   activateOnVerify?: boolean;
 }): PublicVenue {
+  const claim = evaluateSpaceClaim({
+    ownerId: input.ownerId,
+    lat: input.lat,
+    lng: input.lng,
+    address: input.address,
+    adoptReleased: true,
+  });
+  if (claim.kind === "blocked") {
+    throw new SpaceClaimedError(claim.ownerEmail, claim.supportUrl);
+  }
   const plan: SpacePlan = input.plan === "paid" ? "paid" : "free";
-  if (plan === "free" && countFreeSpaces(input.ownerId) >= FREE_SPACE_LIMIT) {
+  const exceptVenueId = claim.kind === "takeover" ? claim.venueId : undefined;
+  if (plan === "free" && freeSpaceCount(input.ownerId, exceptVenueId) >= FREE_SPACE_LIMIT) {
     throw new Error(
       `Free facilities can have ${FREE_SPACE_LIMIT} space. Additional spaces are paid — $39/mo or $390/yr per space.`,
     );
   }
-  const venueId = id("ven");
   const radius = plan === "free" ? FREE_RADIUS_METERS : (input.radiusMeters ?? 80);
+  const polygon = plan === "paid" && input.polygon ? JSON.stringify(input.polygon) : null;
+  const billingInterval = plan === "paid" ? (input.billingInterval ?? "month") : null;
+  const logo = plan === "paid" ? (input.logoData ?? null) : null;
+  const active = input.active ? 1 : 0;
+  const activateOnVerify = input.activateOnVerify ? 1 : 0;
+  if (claim.kind === "takeover") {
+    db.prepare(
+      `UPDATE venues SET
+        owner_id = ?, name = ?, address = ?, lat = ?, lng = ?, radius_meters = ?,
+        timezone = ?, join_code = ?, active = ?, plan = ?, polygon = ?,
+        billing_interval = ?, logo_data = ?, activate_on_verify = ?, claim_released = 0
+       WHERE id = ?`,
+    ).run(
+      input.ownerId,
+      input.name,
+      input.address,
+      input.lat,
+      input.lng,
+      radius,
+      input.timezone,
+      input.joinCode.toUpperCase(),
+      active,
+      plan,
+      polygon,
+      billingInterval,
+      logo,
+      activateOnVerify,
+      claim.venueId,
+    );
+    if (plan === "paid" && input.windows?.length) {
+      replaceWindows(claim.venueId, input.windows);
+    } else {
+      db.prepare(`DELETE FROM quiet_windows WHERE venue_id = ?`).run(claim.venueId);
+    }
+    return getVenue(claim.venueId)!;
+  }
+  const venueId = id("ven");
   db.prepare(
     `INSERT INTO venues
       (id, owner_id, name, address, lat, lng, radius_meters, timezone, join_code, active, created_at, plan, polygon, billing_interval, logo_data, activate_on_verify)
@@ -210,13 +269,13 @@ export function createVenue(input: {
     radius,
     input.timezone,
     input.joinCode.toUpperCase(),
-    input.active ? 1 : 0,
+    active,
     nowIso(),
     plan,
-    plan === "paid" && input.polygon ? JSON.stringify(input.polygon) : null,
-    plan === "paid" ? (input.billingInterval ?? "month") : null,
-    plan === "paid" ? (input.logoData ?? null) : null,
-    input.activateOnVerify ? 1 : 0,
+    polygon,
+    billingInterval,
+    logo,
+    activateOnVerify,
   );
   if (plan === "paid" && input.windows?.length) {
     replaceWindows(venueId, input.windows);
