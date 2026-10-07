@@ -131,6 +131,12 @@ addColumn("venues", "logo_data TEXT");
 addColumn("venues", "billing_interval TEXT");
 addColumn("venues", "activate_on_verify INTEGER NOT NULL DEFAULT 0");
 addColumn("venues", "claim_released INTEGER NOT NULL DEFAULT 0");
+const addedUpdatedAt = addColumn("venues", "updated_at TEXT");
+if (addedUpdatedAt) {
+  db.exec(
+    `UPDATE venues SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''`,
+  );
+}
 addColumn("admins", "first_name TEXT NOT NULL DEFAULT ''");
 addColumn("admins", "last_name TEXT NOT NULL DEFAULT ''");
 const addedEmailVerified = addColumn("admins", "email_verified_at TEXT");
@@ -161,6 +167,10 @@ backfillAdminNames();
 
 export function nowIso(): string {
   return new Date().toISOString();
+}
+
+export function touchVenue(venueId: string): void {
+  db.prepare(`UPDATE venues SET updated_at = ? WHERE id = ?`).run(nowIso(), venueId);
 }
 
 export function id(prefix: string): string {

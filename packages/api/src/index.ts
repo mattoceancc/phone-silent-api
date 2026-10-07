@@ -56,6 +56,7 @@ import {
   listSpacesForSiteAdmin,
   reassignSpaceOwner,
   resetSpaceOwner,
+  summarizeSiteAdminSpaces,
 } from "./site-admins";
 
 const PORT = Number(process.env.PORT ?? 43124);
@@ -680,21 +681,9 @@ app.post("/admin/venues/:id/fence-walk", async (c) => {
   }
 });
 
-app.get("/admin/venues/:id/metrics", (c) => {
-  const auth = requireAdmin(c);
-  if (!auth) return c.json({ error: "Sign in required" }, 401);
-  const existing = getVenue(c.req.param("id"));
-  if (!existing) return c.json({ error: "Space not found" }, 404);
-  if (!listVenuesForOwner(auth.admin.id).some((item) => item.id === existing.id)) {
-    return c.json({ error: "Space not found" }, 404);
-  }
-  const blocked = manageBlocked(c, auth.admin.emailVerified);
-  if (blocked) return blocked;
-  if (existing.plan !== "paid") {
-    return c.json({ error: UPGRADE_BLURB, upgrade: true }, 402);
-  }
-  return c.json({ metrics: metricsFor(existing.id), anonymous: true });
-});
+// Visitor counts moved to /site-admin. This path stays registered so paid-plan
+// clients get an empty 404 instead of usage numbers.
+app.get("/admin/venues/:id/metrics", (c) => c.json({ error: "Not found" }, 404));
 
 app.get("/venues/:id/logo", (c) => {
   const data = logoData(c.req.param("id"));
@@ -795,7 +784,20 @@ app.get("/site-admin/venues", (c) => {
   const denied = requireSiteAdmin(c);
   if (denied) return denied;
   const q = c.req.query("q") ?? "";
-  return c.json({ venues: listSpacesForSiteAdmin(q) });
+  const venues = listSpacesForSiteAdmin(q);
+  return c.json({ venues, totals: summarizeSiteAdminSpaces(venues) });
+});
+
+app.get("/site-admin/venues/:id/metrics", (c) => {
+  const denied = requireSiteAdmin(c);
+  if (denied) return denied;
+  const venue = getVenue(c.req.param("id"));
+  if (!venue) return c.json({ error: "Space not found" }, 404);
+  return c.json({
+    venueId: venue.id,
+    anonymous: true,
+    metrics: metricsFor(venue.id),
+  });
 });
 
 app.post("/site-admin/venues/:id/reset-owner", (c) => {

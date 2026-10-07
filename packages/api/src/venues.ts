@@ -6,7 +6,7 @@ import {
   FREE_SPACE_LIMIT,
   reasonCopy,
 } from "@phone-silent/shared";
-import { db, id, nowIso } from "./db";
+import { db, id, nowIso, touchVenue } from "./db";
 import { evaluateSpaceClaim, SpaceClaimedError } from "./space-claim";
 
 export type SpacePlan = "free" | "paid";
@@ -252,6 +252,7 @@ export function createVenue(input: {
     } else {
       db.prepare(`DELETE FROM quiet_windows WHERE venue_id = ?`).run(claim.venueId);
     }
+    touchVenue(claim.venueId);
     return getVenue(claim.venueId)!;
   }
   const venueId = id("ven");
@@ -280,6 +281,7 @@ export function createVenue(input: {
   if (plan === "paid" && input.windows?.length) {
     replaceWindows(venueId, input.windows);
   }
+  touchVenue(venueId);
   return getVenue(venueId)!;
 }
 
@@ -334,6 +336,7 @@ export function updateVenue(
   if (plan === "paid" && patch.logoData !== undefined) {
     db.prepare(`UPDATE venues SET logo_data = ? WHERE id = ?`).run(patch.logoData, venueId);
   }
+  touchVenue(venueId);
   return getVenue(venueId);
 }
 
@@ -341,6 +344,7 @@ export function markPaid(venueId: string, interval: "month" | "year"): PublicVen
   db.prepare(
     `UPDATE venues SET plan = 'paid', billing_interval = ? WHERE id = ?`,
   ).run(interval, venueId);
+  touchVenue(venueId);
   return getVenue(venueId);
 }
 
@@ -357,6 +361,7 @@ export function applyWalkFence(venueId: string, points: Coordinates[]): PublicVe
   db.prepare(
     `UPDATE venues SET lat = ?, lng = ?, radius_meters = ?, polygon = ? WHERE id = ?`,
   ).run(circle.lat, circle.lng, Math.ceil(circle.radiusMeters), JSON.stringify(points), venueId);
+  touchVenue(venueId);
   return getVenue(venueId);
 }
 
@@ -437,6 +442,47 @@ export function recordEvent(venueId: string, kind: "join" | "silence", at = new 
   ).run(id("evt"), venueId, kind, day, nowIso());
 }
 
+export type VisitorCounts = {
+  joins: number;
+  silences: number;
+};
+
+function emptyVisitorCounts(): VisitorCounts {
+  return { joins: 0, silences: 0 };
+}
+
+function applyKindCount(counts: VisitorCounts, kind: string, n: number | bigint): void {
+  if (kind === "join") counts.joins += Number(n);
+  if (kind === "silence") counts.silences += Number(n);
+}
+
+/** All-time anonymous join and silence events for every space. */
+export function visitorCountsByVenue(): Map<string, VisitorCounts> {
+  const rows = db
+    .prepare(
+      `SELECT venue_id, kind, COUNT(*) AS n FROM space_events GROUP BY venue_id, kind`,
+    )
+    .all() as { venue_id: string; kind: string; n: number | bigint }[];
+  const map = new Map<string, VisitorCounts>();
+  for (const row of rows) {
+    const current = map.get(row.venue_id) ?? emptyVisitorCounts();
+    applyKindCount(current, row.kind, row.n);
+    map.set(row.venue_id, current);
+  }
+  return map;
+}
+
+export function visitorCountsFor(venueId: string): VisitorCounts {
+  const rows = db
+    .prepare(
+      `SELECT kind, COUNT(*) AS n FROM space_events WHERE venue_id = ? GROUP BY kind`,
+    )
+    .all(venueId) as { kind: string; n: number | bigint }[];
+  const counts = emptyVisitorCounts();
+  for (const row of rows) applyKindCount(counts, row.kind, row.n);
+  return counts;
+}
+
 export function metricsFor(venueId: string) {
   const rows = db
     .prepare(
@@ -450,17 +496,12 @@ export function metricsFor(venueId: string) {
   const byDay = new Map<string, { day: string; joins: number; silences: number }>();
   for (const row of rows) {
     const current = byDay.get(row.day) ?? { day: row.day, joins: 0, silences: 0 };
-    if (row.kind === "join") current.joins = Number(row.n);
-    if (row.kind === "silence") current.silences = Number(row.n);
+    applyKindCount(current, row.kind, row.n);
     byDay.set(row.day, current);
   }
-  const days = [...byDay.values()];
   return {
-    days,
-    totals: {
-      joins: days.reduce((sum, item) => sum + item.joins, 0),
-      silences: days.reduce((sum, item) => sum + item.silences, 0),
-    },
+    days: [...byDay.values()],
+    totals: visitorCountsFor(venueId),
   };
 }
 
