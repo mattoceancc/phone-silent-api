@@ -53,7 +53,7 @@ import { saveLaunchSignup } from "./notify";
 import { corsOrigin, isProduction } from "./origins";
 import { clientIp, rateLimit } from "./rate-limit";
 import { SUPPORT_TOPICS, saveSupportMessage, type SupportTopic } from "./support";
-import { evaluateSpaceClaim, SpaceClaimedError } from "./space-claim";
+import { evaluateSpaceClaim, findOwnSameSpace, SpaceClaimedError } from "./space-claim";
 import {
   listSpacesForSiteAdmin,
   reassignSpaceOwner,
@@ -503,6 +503,15 @@ app.post("/admin/venues", async (c) => {
   if (!body.success) {
     return c.json({ error: "Check space details", details: body.error.flatten() }, 400);
   }
+  const existingId = findOwnSameSpace({
+    ownerId: auth.admin.id,
+    name: body.data.name,
+    lat: body.data.lat,
+    lng: body.data.lng,
+    address: body.data.address,
+  });
+  const existing = existingId ? getVenue(existingId) : null;
+  if (existing) return c.json({ venue: existing, existing: true }, 200);
   const joinCode = body.data.joinCode?.toUpperCase() ?? randomJoinCode();
   if (getVenueByCode(joinCode)) {
     return c.json({ error: "That join code is already in use" }, 409);
@@ -877,9 +886,14 @@ const invokedDirectly =
   process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
-  serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
+  const server = serve({ fetch: app.fetch, port: PORT, hostname: "0.0.0.0" }, (info) => {
     console.log(`Phone Silent API on http://127.0.0.1:${info.port}`);
   });
+  // Keep idle connections open longer than the proxy in front (Cloudflare/Render)
+  // so a reused connection is not closed mid-request ("network connection was lost").
+  const http = server as unknown as { keepAliveTimeout: number; headersTimeout: number };
+  http.keepAliveTimeout = 65_000;
+  http.headersTimeout = 66_000;
 }
 
 export { app };

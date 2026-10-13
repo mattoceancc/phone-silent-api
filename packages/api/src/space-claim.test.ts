@@ -80,6 +80,14 @@ describe("one owner per quiet space", { concurrency: 1 }, () => {
     assert.equal(created.status, 201);
     const venueId = String((created.data.venue as Json).id);
 
+    // Retry after a dropped connection: same owner, same space -> existing space, no duplicate.
+    const retried = await call("/admin/venues", { method: "POST", token: ada.token, body: austin });
+    assert.equal(retried.status, 200);
+    assert.equal(retried.data.existing, true);
+    assert.equal(String((retried.data.venue as Json).id), venueId);
+    const mine = await call("/admin/venues", { token: ada.token });
+    assert.equal((mine.data.venues as Json[]).length, 1);
+
     const grace = await register("grace@example.com", "Grace");
     const blocked = await call("/admin/venues", {
       method: "POST",
