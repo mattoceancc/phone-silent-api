@@ -122,3 +122,34 @@ export function evaluateSpaceClaim(input: {
   if (!next) return { kind: "clear" };
   return { kind: "takeover", venueId: next.id };
 }
+
+/**
+ * Idempotent create: the same account re-submitting the same space (same place,
+ * same name) gets its existing space back instead of a duplicate or a claim error.
+ * Covers retries after a dropped connection where the first create succeeded.
+ */
+export function findOwnSameSpace(input: {
+  ownerId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  address: string;
+}): string | null {
+  const rows = db
+    .prepare(
+      `SELECT v.id, v.owner_id, a.email AS owner_email, v.name, v.address, v.lat, v.lng,
+              v.radius_meters, v.plan, v.polygon, v.claim_released
+       FROM venues v
+       JOIN admins a ON a.id = v.owner_id
+       WHERE v.owner_id = ? AND v.claim_released = 0
+       ORDER BY v.created_at DESC`,
+    )
+    .all(input.ownerId) as (ClaimRow & { name: string })[];
+  const wanted = normalizeAddress(input.name);
+  const hit = rows.find(
+    (row) =>
+      normalizeAddress(row.name) === wanted &&
+      samePlace(row, input.lat, input.lng, input.address),
+  );
+  return hit?.id ?? null;
+}
