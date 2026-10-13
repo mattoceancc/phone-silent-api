@@ -19,13 +19,13 @@ type Json = Record<string, unknown>;
 
 async function call(
   pathname: string,
-  opts: { method?: string; token?: string; body?: unknown } = {},
+  opts: { method?: string; token?: string; body?: unknown; ip?: string } = {},
 ) {
   const response = await app.request(pathname, {
     method: opts.method ?? "GET",
     headers: {
       "content-type": "application/json",
-      "x-forwarded-for": "203.0.113.16",
+      "x-forwarded-for": opts.ip ?? "203.0.113.16",
       ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
     },
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
@@ -44,9 +44,10 @@ const austin = {
   active: true,
 };
 
-async function register(email: string, firstName: string) {
+async function register(email: string, firstName: string, ip?: string) {
   const registered = await call("/auth/register", {
     method: "POST",
+    ip,
     body: {
       email,
       firstName,
@@ -58,6 +59,7 @@ async function register(email: string, firstName: string) {
   const preview = (registered.data.verification as Json).preview as Json;
   const verified = await call("/auth/verify-email", {
     method: "POST",
+    ip,
     token: String(registered.data.token),
     body: { code: preview.code },
   });
@@ -96,7 +98,32 @@ describe("one owner per quiet space", { concurrency: 1 }, () => {
     });
     assert.equal(blocked.status, 409);
     assert.match(String(blocked.data.error), /account manager/i);
-    assert.equal(blocked.data.ownerEmail, "ada@example.com");
+    assert.equal(blocked.data.ownerEmail, "ad•••@example.com");
+    assert.doesNotMatch(String(blocked.data.error), /ada@example\.com/);
+    assert.equal(blocked.data.claimVenueId, venueId);
+    assert.equal(blocked.data.contactOwner, true);
+    const relayed = await call(`/admin/venues/${venueId}/contact-owner`, {
+      method: "POST",
+      token: grace.token,
+      body: { spaceName: "Other hall", message: "Is this ours?" },
+    });
+    assert.equal(relayed.status, 200);
+    assert.equal(relayed.data.ownerEmail, "ad•••@example.com");
+    const self = await call(`/admin/venues/${venueId}/contact-owner`, {
+      method: "POST",
+      token: ada.token,
+      body: {},
+    });
+    assert.equal(self.status, 400);
+    for (let i = 0; i < 4; i += 1) {
+      await call(`/admin/venues/${venueId}/contact-owner`, { method: "POST", token: grace.token, body: {} });
+    }
+    const limited = await call(`/admin/venues/${venueId}/contact-owner`, {
+      method: "POST",
+      token: grace.token,
+      body: {},
+    });
+    assert.equal(limited.status, 429);
     assert.equal(blocked.data.supportUrl, "https://phonesilent.com/support");
 
     const linus = await register("linus@example.com", "Linus");
@@ -186,7 +213,23 @@ describe("one owner per quiet space", { concurrency: 1 }, () => {
       body: { lat: austin.lat, lng: austin.lng, address: austin.address },
     });
     assert.equal(movedOnto.status, 409);
-    assert.equal(movedOnto.data.ownerEmail, "ada@example.com");
+    assert.equal(movedOnto.data.ownerEmail, "ad•••@example.com");
+  });
+
+  test("placeholder addresses do not match across accounts", async () => {
+    const base = { ...austin, name: "Pin A", address: "Current location", lat: 35.0, lng: -80.0 };
+    const one = await register("pin-a@example.com", "PinA", "198.51.100.97");
+    const first = await call("/admin/venues", { method: "POST", token: one.token, body: base });
+    assert.equal(first.status, 201);
+    const two = await register("pin-b@example.com", "PinB", "198.51.100.98");
+    // ~100 m north: outside the 38.1 m zone, inside the 150 m address window.
+    const near = { ...base, name: "Pin B", address: "current LOCATION", lat: 35.0009 };
+    const second = await call("/admin/venues", { method: "POST", token: two.token, body: near });
+    assert.equal(second.status, 201);
+    const three = await register("pin-c@example.com", "PinC", "198.51.100.99");
+    const coords = { ...base, name: "Pin C", address: "35.0, -80.0009", lng: -80.0009 };
+    const third = await call("/admin/venues", { method: "POST", token: three.token, body: coords });
+    assert.equal(third.status, 201);
   });
 
   test("treats a blank SITE_ADMIN_EMAILS as the default owner", async () => {

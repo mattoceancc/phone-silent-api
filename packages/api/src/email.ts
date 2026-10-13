@@ -87,7 +87,7 @@ export type OutboundEmail = {
   replyTo?: string;
 };
 
-export type EmailKind = "support" | "notify" | "verify" | "confirm";
+export type EmailKind = "support" | "notify" | "verify" | "confirm" | "contact";
 
 /**
  * Sends with the Resend account already used for support mail.
@@ -247,4 +247,33 @@ export async function sendRegistrationConfirmation(input: {
 }): Promise<{ sent: boolean }> {
   const built = buildConfirmationEmail(input);
   return sendEmail({ to: input.to, ...built }, "confirm");
+}
+
+/** Relays a "Contact the owner" request. The requester never sees the owner's address. */
+export async function sendOwnerContactRequest(input: {
+  to: string;
+  requesterName: string;
+  requesterEmail: string;
+  spaceName: string;
+  message?: string | null;
+}): Promise<{ sent: boolean }> {
+  const lines = [
+    `${input.requesterName} (${input.requesterEmail}) tried to register "${input.spaceName}" on Phone Silent.`,
+    `Your account manages a quiet space at that location, so the registration was blocked.`,
+    ...(input.message ? ["", `Their message: ${input.message}`] : []),
+    "",
+    `Reply to this email to reach them directly. If the space should belong to them, contact support to release or transfer the claim: https://phonesilent.com/support`,
+  ];
+  const text = lines.join("\n");
+  const html = lines.map((line) => (line ? `<p>${escapeHtml(line)}</p>` : "")).join("");
+  return sendEmail(
+    {
+      to: input.to,
+      replyTo: input.requesterEmail,
+      subject: `Phone Silent: ${input.requesterName} wants to register "${input.spaceName}"`,
+      text,
+      html,
+    },
+    "contact",
+  );
 }

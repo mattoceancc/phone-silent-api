@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { db } from "./db";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -44,6 +45,7 @@ import {
 import { listSuperAdminSpaces, listSuperAdminUsers, platformStats, setComp } from "./super-admin";
 import { FREE_RADIUS_METERS, UPGRADE_BLURB } from "@phone-silent/shared";
 import {
+  sendOwnerContactRequest,
   sendRegistrationConfirmation,
   sendSupportEmail,
   sendVerificationEmail,
@@ -53,7 +55,7 @@ import { saveLaunchSignup } from "./notify";
 import { corsOrigin, isProduction } from "./origins";
 import { clientIp, rateLimit } from "./rate-limit";
 import { SUPPORT_TOPICS, saveSupportMessage, type SupportTopic } from "./support";
-import { evaluateSpaceClaim, findOwnSameSpace, SpaceClaimedError } from "./space-claim";
+import { evaluateSpaceClaim, findOwnSameSpace, maskEmail, SpaceClaimedError } from "./space-claim";
 import {
   listSpacesForSiteAdmin,
   reassignSpaceOwner,
@@ -545,16 +547,58 @@ app.post("/admin/venues", async (c) => {
     return c.json({ venue }, 201);
   } catch (err) {
     if (err instanceof SpaceClaimedError) {
-      return c.json(
-        { error: err.message, ownerEmail: err.ownerEmail, supportUrl: err.supportUrl },
-        409,
-      );
+      return c.json(err.toJson(), 409);
     }
     return c.json(
       { error: err instanceof Error ? err.message : UPGRADE_BLURB, upgrade: true },
       402,
     );
   }
+});
+
+const contactOwnerBody = z.object({
+  spaceName: z.string().trim().min(1).max(120).optional(),
+  message: z.string().trim().max(1000).optional(),
+});
+
+/** Blocked by a claim: relay a note to the owner without revealing their email. */
+app.post("/admin/venues/:id/contact-owner", async (c) => {
+  const auth = requireAdmin(c);
+  if (!auth) return c.json({ error: "Sign in required" }, 401);
+  const parsed = contactOwnerBody.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: "Check your message" }, 400);
+  const row = db
+    .prepare(
+      `SELECT v.name, v.owner_id, v.claim_released, a.email AS owner_email
+       FROM venues v JOIN admins a ON a.id = v.owner_id WHERE v.id = ?`,
+    )
+    .get(c.req.param("id")) as
+    | { name: string; owner_id: string; claim_released: number; owner_email: string }
+    | undefined;
+  if (!row || Number(row.claim_released) === 1) return c.json({ error: "Space not found" }, 404);
+  if (row.owner_id === auth.admin.id) {
+    return c.json({ error: "You already manage this space" }, 400);
+  }
+  const perUser = rateLimit(`contact-owner:${auth.admin.id}`);
+  if (!perUser.ok) {
+    c.header("Retry-After", String(perUser.retryAfterSec));
+    return c.json({ error: "Too many messages. Please wait a few minutes and try again." }, 429);
+  }
+  const limited = tooMany(c, "contact-owner");
+  if (limited) return limited;
+  const requesterName =
+    `${auth.admin.firstName ?? ""} ${auth.admin.lastName ?? ""}`.trim() || auth.admin.email;
+  const result = await sendOwnerContactRequest({
+    to: row.owner_email,
+    requesterName,
+    requesterEmail: auth.admin.email,
+    spaceName: parsed.data.spaceName ?? row.name,
+    message: parsed.data.message ?? null,
+  });
+  console.log(
+    JSON.stringify({ event: "contact_owner", venueId: c.req.param("id"), from: auth.admin.id, sent: result.sent }),
+  );
+  return c.json({ sent: result.sent, ownerEmail: maskEmail(row.owner_email) });
 });
 
 app.get("/admin/venues/:id", (c) => {
@@ -593,11 +637,7 @@ app.patch("/admin/venues/:id", async (c) => {
   });
   if (claim.kind === "blocked") {
     return c.json(
-      {
-        error: new SpaceClaimedError(claim.ownerEmail, claim.supportUrl).message,
-        ownerEmail: claim.ownerEmail,
-        supportUrl: claim.supportUrl,
-      },
+      new SpaceClaimedError(claim.ownerEmail, claim.supportUrl, claim.venueId).toJson(),
       409,
     );
   }
