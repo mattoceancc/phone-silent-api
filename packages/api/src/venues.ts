@@ -230,7 +230,7 @@ export function createVenue(input: {
     adoptReleased: true,
   });
   if (claim.kind === "blocked") {
-    throw new SpaceClaimedError(claim.ownerEmail, claim.supportUrl);
+    throw new SpaceClaimedError(claim.ownerEmail, claim.supportUrl, claim.venueId);
   }
   const storedPlan: SpacePlan = input.plan === "paid" ? "paid" : "free";
   const plan: SpacePlan = storedPlan === "paid" || ownerComped(input.ownerId) ? "paid" : "free";

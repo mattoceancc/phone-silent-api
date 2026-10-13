@@ -5,17 +5,38 @@ import { configuredWebOrigin } from "./origins";
 
 const ADDRESS_MATCH_METERS = 150;
 
+/** "mattoceancc@gmail.com" -> "ma•••@gmail.com". The owner's address is never shown in full. */
+export function maskEmail(email: string): string {
+  const [local = "", domain = ""] = email.split("@");
+  const head = local.slice(0, Math.min(2, Math.max(1, local.length - 1)));
+  return domain ? `${head}•••@${domain}` : `${head}•••`;
+}
+
 export class SpaceClaimedError extends Error {
+  /** Masked owner email, safe to show. */
   readonly ownerEmail: string;
   readonly supportUrl: string;
+  readonly venueId: string;
 
-  constructor(ownerEmail: string, supportUrl: string) {
+  constructor(ownerEmail: string, supportUrl: string, venueId: string) {
+    const masked = maskEmail(ownerEmail);
     super(
-      `This quiet space already has an account manager (${ownerEmail}). Sign in with that account, or contact support if the claim should be released.`,
+      `This quiet space already has an account manager (${masked}). Contact the owner or support if the claim should be released.`,
     );
     this.name = "SpaceClaimedError";
-    this.ownerEmail = ownerEmail;
+    this.ownerEmail = masked;
     this.supportUrl = supportUrl;
+    this.venueId = venueId;
+  }
+
+  toJson() {
+    return {
+      error: this.message,
+      ownerEmail: this.ownerEmail,
+      supportUrl: this.supportUrl,
+      claimVenueId: this.venueId,
+      contactOwner: true,
+    };
   }
 }
 
@@ -40,7 +61,7 @@ type ClaimRow = {
 
 export type ClaimDecision =
   | { kind: "clear" }
-  | { kind: "blocked"; ownerEmail: string; supportUrl: string }
+  | { kind: "blocked"; ownerEmail: string; supportUrl: string; venueId: string }
   | { kind: "takeover"; venueId: string };
 
 function normalizeAddress(value: string): string {
@@ -60,6 +81,30 @@ function polygonOf(raw: string | null): Coordinates[] | null {
   }
 }
 
+const PLACEHOLDER_ADDRESSES = new Set([
+  "",
+  "current location",
+  "my location",
+  "dropped pin",
+  "pin",
+  "location",
+  "unknown",
+  "unknown address",
+  "no address",
+  "n a",
+  "na",
+]);
+
+/** Generic or placeholder text ("Current location", "Dropped pin", bare coordinates) is not an address. */
+export function isPlaceholderAddress(value: string | null | undefined): boolean {
+  const raw = (value ?? "").trim().toLowerCase();
+  if (PLACEHOLDER_ADDRESSES.has(normalizeAddress(raw))) return true;
+  // Coordinate-only strings like "39.9497, -74.3430" or "39.9497° N, 74.3430° W".
+  return /^[\s()\[\]]*-?\d{1,3}(\.\d+)?\s*°?\s*[nsew]?\s*[,;\s]\s*-?\d{1,3}(\.\d+)?\s*°?\s*[nsew]?[\s()\[\]]*$/i.test(
+    raw,
+  );
+}
+
 /** Same building: inside the quiet zone, or the same address within a short walk. */
 function samePlace(row: ClaimRow, lat: number, lng: number, address: string): boolean {
   const point = { lat, lng };
@@ -68,6 +113,7 @@ function samePlace(row: ClaimRow, lat: number, lng: number, address: string): bo
   if (polygon && isInsidePolygon(point, polygon)) return true;
   const distance = distanceMeters(center, point);
   if (distance <= Math.max(row.radius_meters, FREE_RADIUS_METERS)) return true;
+  if (isPlaceholderAddress(row.address) || isPlaceholderAddress(address)) return false;
   const left = normalizeAddress(row.address);
   const right = normalizeAddress(address);
   return left.length >= 8 && left === right && distance <= ADDRESS_MATCH_METERS;
@@ -106,6 +152,7 @@ export function evaluateSpaceClaim(input: {
   if (held) {
     return {
       kind: "blocked",
+      venueId: held.id,
       ownerEmail: held.owner_email,
       supportUrl: supportPageUrl(),
     };
