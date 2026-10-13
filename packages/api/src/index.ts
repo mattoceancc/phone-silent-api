@@ -1,6 +1,11 @@
 import type { Context } from "hono";
 import { db } from "./db";
 import { pathToFileURL } from "node:url";
+import {
+  createOwnershipRequest,
+  decideOwnershipRequest,
+  listOwnershipRequests,
+} from "./ownership-requests";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -913,6 +918,64 @@ app.post("/site-admin/venues/:id/owner", async (c) => {
   const result = reassignSpaceOwner(c.req.param("id"), body.data.email);
   if (!result.ok) return c.json({ error: result.error }, result.status);
   return c.json({ venue: result.space });
+});
+
+const ownershipBody = z.object({ reason: z.string().trim().max(1000).optional() });
+
+/** Blocked by a claim: ask support to transfer the space. Pending until a super-admin decides. */
+app.post("/admin/venues/:id/ownership-request", async (c) => {
+  const auth = requireAdmin(c);
+  if (!auth) return c.json({ error: "Sign in required" }, 401);
+  const parsed = ownershipBody.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: "Reason is too long" }, 400);
+  const perUser = rateLimit(`ownership:${auth.admin.id}`);
+  if (!perUser.ok) {
+    c.header("Retry-After", String(perUser.retryAfterSec));
+    return c.json({ error: "Too many requests. Please wait a few minutes and try again." }, 429);
+  }
+  const limited = tooMany(c, "ownership");
+  if (limited) return limited;
+  const result = await createOwnershipRequest({
+    venueId: c.req.param("id"),
+    requesterId: auth.admin.id,
+    reason: parsed.data.reason ?? null,
+  });
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json(
+    { request: { id: result.request.id, status: result.request.status, createdAt: result.request.createdAt } },
+    201,
+  );
+});
+
+function superGate(c: Context) {
+  const denied = requireSiteAdmin(c);
+  if (denied) return { denied, email: "" };
+  return { denied: null, email: requireAdmin(c)!.admin.email };
+}
+
+app.get("/super-admin/ownership-requests", (c) => {
+  const gate = superGate(c);
+  if (gate.denied) return gate.denied;
+  const status = c.req.query("status") === "all" ? "all" : "pending";
+  return c.json({ requests: listOwnershipRequests(status) });
+});
+
+app.post("/super-admin/ownership-requests/:id/:decision", async (c) => {
+  const gate = superGate(c);
+  if (gate.denied) return gate.denied;
+  const decision = c.req.param("decision");
+  if (decision !== "approve" && decision !== "deny") return c.json({ error: "Not found" }, 404);
+  const body = z
+    .object({ note: z.string().trim().max(1000).optional() })
+    .safeParse(await c.req.json().catch(() => ({})));
+  const result = await decideOwnershipRequest({
+    requestId: c.req.param("id"),
+    decision,
+    decidedBy: gate.email,
+    note: body.success ? (body.data.note ?? null) : null,
+  });
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json({ request: result.request });
 });
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));

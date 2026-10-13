@@ -87,7 +87,7 @@ export type OutboundEmail = {
   replyTo?: string;
 };
 
-export type EmailKind = "support" | "notify" | "verify" | "confirm" | "contact";
+export type EmailKind = "support" | "notify" | "verify" | "confirm" | "contact" | "ownership";
 
 /**
  * Sends with the Resend account already used for support mail.
@@ -276,4 +276,8 @@ export async function sendOwnerContactRequest(input: {
     },
     "contact",
   );
+}
+
+export function escapeHtmlText(value: string): string {
+  return escapeHtml(value);
 }
