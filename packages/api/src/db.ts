@@ -145,6 +145,13 @@ if (addedEmailVerified) {
   db.exec(`UPDATE admins SET email_verified_at = created_at WHERE email_verified_at IS NULL`);
 }
 
+// Super-admin comps: paid features granted free. Kept apart from plan = 'paid'
+// so real paying customers and comped accounts never mix. Additive, nullable.
+addColumn("venues", "comped_at TEXT");
+addColumn("venues", "comped_by TEXT");
+addColumn("admins", "comped_at TEXT");
+addColumn("admins", "comped_by TEXT");
+
 function backfillAdminNames(): void {
   const rows = db
     .prepare(

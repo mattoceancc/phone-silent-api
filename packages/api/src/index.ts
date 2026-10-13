@@ -39,7 +39,9 @@ import {
   randomJoinCode,
   recordEvent,
   updateVenue,
+  ownerComped,
 } from "./venues";
+import { listSuperAdminSpaces, listSuperAdminUsers, platformStats, setComp } from "./super-admin";
 import { FREE_RADIUS_METERS, UPGRADE_BLURB } from "@phone-silent/shared";
 import {
   sendRegistrationConfirmation,
@@ -505,7 +507,7 @@ app.post("/admin/venues", async (c) => {
   if (getVenueByCode(joinCode)) {
     return c.json({ error: "That join code is already in use" }, 409);
   }
-  const paid = body.data.plan === "paid";
+  const paid = body.data.plan === "paid" || ownerComped(auth.admin.id);
   const wantsActive = body.data.active ?? true;
   try {
     const venue = createVenue({
@@ -519,8 +521,8 @@ app.post("/admin/venues", async (c) => {
       joinCode,
       active: auth.admin.emailVerified ? wantsActive : false,
       activateOnVerify: !auth.admin.emailVerified && wantsActive,
-      plan: paid ? "paid" : "free",
-      billingInterval: paid ? (body.data.billingInterval ?? "month") : null,
+      plan: body.data.plan === "paid" ? "paid" : "free",
+      billingInterval: body.data.plan === "paid" ? (body.data.billingInterval ?? "month") : null,
       windows: paid ? (body.data.windows ?? []) : [],
       polygon: paid ? (body.data.polygon ?? null) : null,
       logoData: paid ? (body.data.logoData ?? null) : null,
@@ -777,8 +779,52 @@ function requireSiteAdmin(c: Context) {
   if (!auth.admin.siteAdmin) {
     return c.json({ error: "This page is only for the Phone Silent site owner." }, 403);
   }
+  // Email verification by link is a hard gate, super-admins included.
+  if (!auth.admin.emailVerified) {
+    return c.json({ error: "Verify your email to use site admin." }, 403);
+  }
   return null;
 }
+
+function requireSuperAdmin(c: Context) {
+  const denied = requireSiteAdmin(c);
+  if (denied) return { denied };
+  return { email: requireAdmin(c)!.admin.email };
+}
+
+app.get("/super-admin/stats", (c) => {
+  const gate = requireSuperAdmin(c);
+  if (gate.denied) return gate.denied;
+  return c.json({ stats: platformStats() });
+});
+
+app.get("/super-admin/users", (c) => {
+  const gate = requireSuperAdmin(c);
+  if (gate.denied) return gate.denied;
+  return c.json({ users: listSuperAdminUsers(c.req.query("q") ?? "") });
+});
+
+app.get("/super-admin/spaces", (c) => {
+  const gate = requireSuperAdmin(c);
+  if (gate.denied) return gate.denied;
+  return c.json({ spaces: listSuperAdminSpaces(c.req.query("q") ?? "") });
+});
+
+app.post("/super-admin/comp", async (c) => {
+  const gate = requireSuperAdmin(c);
+  if (gate.denied) return gate.denied;
+  const body = z
+    .object({
+      kind: z.enum(["user", "space"]),
+      id: z.string().trim().min(1).max(64),
+      comped: z.boolean(),
+    })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "Send kind (user|space), id, and comped." }, 400);
+  const result = setComp(body.data.kind, body.data.id, body.data.comped, gate.email);
+  if (!result) return c.json({ error: "Not found" }, 404);
+  return c.json(result);
+});
 
 app.get("/site-admin/venues", (c) => {
   const denied = requireSiteAdmin(c);

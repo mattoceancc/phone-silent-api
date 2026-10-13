@@ -5,7 +5,8 @@ const DEFAULT_SITE_ADMIN = "mattoceancc@gmail.com";
 
 /** Site-owner emails. A blank or missing SITE_ADMIN_EMAILS uses the default. */
 export function siteAdminEmails(): string[] {
-  const raw = process.env.SITE_ADMIN_EMAILS;
+  // SUPER_ADMIN_EMAILS is the canonical name; SITE_ADMIN_EMAILS is still honored.
+  const raw = process.env.SUPER_ADMIN_EMAILS ?? process.env.SITE_ADMIN_EMAILS;
   const source = raw === undefined || raw.trim() === "" ? DEFAULT_SITE_ADMIN : raw;
   return [
     ...new Set(

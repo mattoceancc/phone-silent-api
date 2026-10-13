@@ -16,3 +16,6 @@ export type BillingInterval = "month" | "year";
 export function isPaidPlan(plan: string | undefined | null): boolean {
   return plan === "paid";
 }
+
+export const PAID_TIER_COPY =
+  "Paid: custom boundaries drawn to fit your space, custom time frames, scheduled silent times, and your own logo and branding.";

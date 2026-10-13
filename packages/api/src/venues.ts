@@ -29,7 +29,26 @@ export type VenueRow = {
   billing_interval: string | null;
   activate_on_verify: number;
   claim_released: number;
+  comped_at?: string | null;
+  comped_by?: string | null;
 };
+
+/** True when the owning account has been comped the paid tier by a super-admin. */
+export function ownerComped(ownerId: string): boolean {
+  const row = db.prepare(`SELECT comped_at FROM admins WHERE id = ?`).get(ownerId) as
+    | { comped_at: string | null }
+    | undefined;
+  return Boolean(row?.comped_at);
+}
+
+/** Comped spaces get paid features but are never stored as plan = 'paid'. */
+export function isComped(row: Pick<VenueRow, "owner_id" | "comped_at">): boolean {
+  return Boolean(row.comped_at) || ownerComped(row.owner_id);
+}
+
+export function hasPaidTier(row: Pick<VenueRow, "plan" | "owner_id" | "comped_at">): boolean {
+  return row.plan === "paid" || isComped(row);
+}
 
 export type PublicVenue = {
   id: string;
@@ -50,6 +69,8 @@ export type PublicVenue = {
   billingInterval: "month" | "year" | null;
   /** Admin who registered the space and manages its settings. Stored as owner_id. */
   accountManagerId: string;
+  /** Paid features granted free by a super-admin (not a paying customer). */
+  comped: boolean;
 };
 
 function parsePolygon(raw: string | null): Coordinates[] | null {
@@ -74,7 +95,7 @@ export function windowsFor(venueId: string): QuietWindow[] {
 }
 
 export function toPublic(row: VenueRow): PublicVenue {
-  const plan: SpacePlan = row.plan === "paid" ? "paid" : "free";
+  const plan: SpacePlan = hasPaidTier(row) ? "paid" : "free";
   return {
     id: row.id,
     name: row.name,
@@ -96,6 +117,7 @@ export function toPublic(row: VenueRow): PublicVenue {
         ? row.billing_interval
         : null,
     accountManagerId: row.owner_id,
+    comped: row.plan !== "paid" && isComped(row),
   };
 }
 
@@ -134,11 +156,11 @@ function freeSpaceCount(ownerId: string, exceptVenueId?: string): number {
   const row = exceptVenueId
     ? (db
         .prepare(
-          `SELECT COUNT(*) AS n FROM venues WHERE owner_id = ? AND plan = 'free' AND id != ?`,
+          `SELECT COUNT(*) AS n FROM venues WHERE owner_id = ? AND plan = 'free' AND comped_at IS NULL AND id != ?`,
         )
         .get(ownerId, exceptVenueId) as { n: number | bigint })
     : (db
-        .prepare(`SELECT COUNT(*) AS n FROM venues WHERE owner_id = ? AND plan = 'free'`)
+        .prepare(`SELECT COUNT(*) AS n FROM venues WHERE owner_id = ? AND plan = 'free' AND comped_at IS NULL`)
         .get(ownerId) as { n: number | bigint });
   return Number(row.n);
 }
@@ -210,7 +232,8 @@ export function createVenue(input: {
   if (claim.kind === "blocked") {
     throw new SpaceClaimedError(claim.ownerEmail, claim.supportUrl);
   }
-  const plan: SpacePlan = input.plan === "paid" ? "paid" : "free";
+  const storedPlan: SpacePlan = input.plan === "paid" ? "paid" : "free";
+  const plan: SpacePlan = storedPlan === "paid" || ownerComped(input.ownerId) ? "paid" : "free";
   const exceptVenueId = claim.kind === "takeover" ? claim.venueId : undefined;
   if (plan === "free" && freeSpaceCount(input.ownerId, exceptVenueId) >= FREE_SPACE_LIMIT) {
     throw new Error(
@@ -219,7 +242,7 @@ export function createVenue(input: {
   }
   const radius = plan === "free" ? FREE_RADIUS_METERS : (input.radiusMeters ?? 80);
   const polygon = plan === "paid" && input.polygon ? JSON.stringify(input.polygon) : null;
-  const billingInterval = plan === "paid" ? (input.billingInterval ?? "month") : null;
+  const billingInterval = storedPlan === "paid" ? (input.billingInterval ?? "month") : null;
   const logo = plan === "paid" ? (input.logoData ?? null) : null;
   const active = input.active ? 1 : 0;
   const activateOnVerify = input.activateOnVerify ? 1 : 0;
@@ -228,7 +251,8 @@ export function createVenue(input: {
       `UPDATE venues SET
         owner_id = ?, name = ?, address = ?, lat = ?, lng = ?, radius_meters = ?,
         timezone = ?, join_code = ?, active = ?, plan = ?, polygon = ?,
-        billing_interval = ?, logo_data = ?, activate_on_verify = ?, claim_released = 0
+        billing_interval = ?, logo_data = ?, activate_on_verify = ?, claim_released = 0,
+        comped_at = NULL, comped_by = NULL
        WHERE id = ?`,
     ).run(
       input.ownerId,
@@ -240,7 +264,7 @@ export function createVenue(input: {
       input.timezone,
       input.joinCode.toUpperCase(),
       active,
-      plan,
+      storedPlan,
       polygon,
       billingInterval,
       logo,
@@ -272,7 +296,7 @@ export function createVenue(input: {
     input.joinCode.toUpperCase(),
     active,
     nowIso(),
-    plan,
+    storedPlan,
     polygon,
     billingInterval,
     logo,
@@ -303,7 +327,7 @@ export function updateVenue(
 ): PublicVenue | null {
   const current = getVenueRow(venueId);
   if (!current) return null;
-  const plan: SpacePlan = current.plan === "paid" ? "paid" : "free";
+  const plan: SpacePlan = hasPaidTier(current) ? "paid" : "free";
   const nextRadius =
     plan === "free" ? FREE_RADIUS_METERS : (patch.radiusMeters ?? current.radius_meters);
   const nextPolygon =
@@ -351,7 +375,7 @@ export function markPaid(venueId: string, interval: "month" | "year"): PublicVen
 export function applyWalkFence(venueId: string, points: Coordinates[]): PublicVenue | null {
   const current = getVenueRow(venueId);
   if (!current) return null;
-  if (current.plan !== "paid") {
+  if (!hasPaidTier(current)) {
     throw new Error("Walk-to-set fence is a paid feature — $39/mo per space.");
   }
   if (points.length < 3) {
@@ -507,6 +531,6 @@ export function metricsFor(venueId: string) {
 
 export function logoData(venueId: string): string | null {
   const row = getVenueRow(venueId);
-  if (!row || row.plan !== "paid") return null;
+  if (!row || !hasPaidTier(row)) return null;
   return row.logo_data;
 }

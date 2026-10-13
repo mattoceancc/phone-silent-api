@@ -26,6 +26,7 @@ export {
   SUPPORT_EMAIL,
   SUPPORT_MAILTO,
   UPGRADE_BLURB,
+  PAID_TIER_COPY,
   isPaidPlan,
 } from "./plans";
 export type { SpacePlan, BillingInterval } from "./plans";
