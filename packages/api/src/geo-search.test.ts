@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, mock, test } from "node:test";
-import { normalizeRouteShorthand, searchAddresses } from "./geo-search";
+import { normalizeRouteShorthand, resetPhotonCooldown, searchAddresses } from "./geo-search";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -48,6 +48,7 @@ describe("route shorthand", () => {
 describe("address search fallback", { concurrency: 1 }, () => {
   afterEach(() => {
     mock.restoreAll();
+    resetPhotonCooldown();
   });
 
   test("ignores queries shorter than 3 characters", async () => {
@@ -196,6 +197,7 @@ describe("address search fallback", { concurrency: 1 }, () => {
 describe("autocomplete search", { concurrency: 1 }, () => {
   afterEach(() => {
     mock.restoreAll();
+    resetPhotonCooldown();
   });
 
   test("asks Photon first and biases toward the given point", async () => {
@@ -236,5 +238,26 @@ describe("autocomplete search", { concurrency: 1 }, () => {
     assert.match(calls[0], /photon/);
     assert.match(calls[1], /nominatim/);
     assert.equal(hits[0]?.label, "Whiting, New Jersey");
+  });
+});
+
+describe("photon cooldown", { concurrency: 1 }, () => {
+  afterEach(() => {
+    mock.restoreAll();
+    resetPhotonCooldown();
+  });
+
+  test("skips Photon right after it fails", async () => {
+    const calls: string[] = [];
+    mock.method(globalThis, "fetch", async (input: string | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("photon")) throw new Error("timeout");
+      return jsonResponse([{ display_name: "Whiting, New Jersey", lat: "39.95", lon: "-74.38" }]);
+    });
+    await searchAddresses("Whiting NJ", { autocomplete: true });
+    calls.length = 0;
+    await searchAddresses("Whiting NJ", { autocomplete: true });
+    assert.equal(calls.filter((u) => u.includes("photon")).length, 0);
   });
 });
