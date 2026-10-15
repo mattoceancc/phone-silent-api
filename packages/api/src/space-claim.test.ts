@@ -14,6 +14,7 @@ delete process.env.RESEND_API_KEY;
 delete process.env.SITE_ADMIN_EMAILS;
 
 const { app } = await import("./index");
+const { insideRealZone } = await import("./space-claim");
 
 type Json = Record<string, unknown>;
 
@@ -222,7 +223,7 @@ describe("one owner per quiet space", { concurrency: 1 }, () => {
     const first = await call("/admin/venues", { method: "POST", token: one.token, body: base });
     assert.equal(first.status, 201);
     const two = await register("pin-b@example.com", "PinB", "198.51.100.98");
-    // ~100 m north: outside the 38.1 m zone, inside the 150 m address window.
+    // ~100 m north: outside the 38.1 m zone.
     const near = { ...base, name: "Pin B", address: "current LOCATION", lat: 35.0009 };
     const second = await call("/admin/venues", { method: "POST", token: two.token, body: near });
     assert.equal(second.status, 201);
@@ -230,6 +231,52 @@ describe("one owner per quiet space", { concurrency: 1 }, () => {
     const coords = { ...base, name: "Pin C", address: "35.0, -80.0009", lng: -80.0009 };
     const third = await call("/admin/venues", { method: "POST", token: three.token, body: coords });
     assert.equal(third.status, 201);
+  });
+
+  test("only the real 125 ft zone of a free space blocks, not the 100 m iOS ring", async () => {
+    // 1e-5 deg latitude ~= 1.11 m.
+    const base = { ...austin, name: "Zone A", address: "500 Zone Ave, Austin, TX", lat: 31.0, lng: -97.0 };
+    const owner = await register("zone-a@example.com", "ZoneA", "198.51.100.120");
+    assert.equal((await call("/admin/venues", { method: "POST", token: owner.token, body: base })).status, 201);
+
+    const b = await register("zone-b@example.com", "ZoneB", "198.51.100.121");
+    // ~30 m north: inside the 38.1 m free zone.
+    const at30 = { ...base, name: "Zone B", lat: 31.00027 };
+    const blocked = await call("/admin/venues", { method: "POST", token: b.token, body: at30 });
+    assert.equal(blocked.status, 409);
+
+    // ~50 m north: outside 38.1 m, inside the 100 m (~328 ft) monitored ring.
+    const at50 = { ...base, name: "Zone B", lat: 31.00045 };
+    const allowed = await call("/admin/venues", { method: "POST", token: b.token, body: at50 });
+    assert.equal(allowed.status, 201);
+
+    // Same street address ~100 m away no longer blocks (old 150 m address match).
+    const c = await register("zone-c@example.com", "ZoneC", "198.51.100.122");
+    const sameAddr = { ...base, name: "Zone C", lng: -97.00105 };
+    const third = await call("/admin/venues", { method: "POST", token: c.token, body: sameAddr });
+    assert.equal(third.status, 201);
+  });
+
+  test("a paid polygon blocks only inside the polygon, not its covering circle", () => {
+    // ~100 m x ~20 m strip centred on (32, -98); covering circle radius ~51 m.
+    const polygon = [
+      { lat: 31.99955, lng: -98.000106 },
+      { lat: 32.00045, lng: -98.000106 },
+      { lat: 32.00045, lng: -97.999894 },
+      { lat: 31.99955, lng: -97.999894 },
+    ];
+    const row = { lat: 32, lng: -98, radius_meters: 52, plan: "paid", polygon: JSON.stringify(polygon) };
+    assert.equal(insideRealZone(row, 32.00005, -98), true); // inside polygon
+    // ~30 m east: outside the strip, inside the 52 m covering circle.
+    assert.equal(insideRealZone(row, 32, -97.99968), false);
+    // Paid circle (no polygon) uses its own radius.
+    const circle = { lat: 32, lng: -98, radius_meters: 80, plan: "paid", polygon: null };
+    assert.equal(insideRealZone(circle, 32.0007, -98), true); // ~78 m
+    assert.equal(insideRealZone(circle, 32.0008, -98), false); // ~89 m
+    // Free space: 38.1 m regardless of stored radius.
+    const free = { lat: 32, lng: -98, radius_meters: 100, plan: "free", polygon: null };
+    assert.equal(insideRealZone(free, 32.00027, -98), true);
+    assert.equal(insideRealZone(free, 32.00045, -98), false);
   });
 
   test("treats a blank SITE_ADMIN_EMAILS as the default owner", async () => {
