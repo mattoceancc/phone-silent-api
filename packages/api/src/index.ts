@@ -29,6 +29,7 @@ import { searchAddresses } from "./geo-search";
 import {
   applyWalkFence,
   countFreeSpaces,
+  accountHasPaidTier,
   createVenue,
   evaluateFor,
   getVenue,
@@ -499,6 +500,7 @@ app.get("/admin/venues", (c) => {
   return c.json({
     venues: listVenuesForOwner(auth.admin.id),
     freeUsed: countFreeSpaces(auth.admin.id),
+    accountPaid: accountHasPaidTier(auth.admin.id),
     pricing: { monthly: 39, yearly: 390, per: "space" },
   });
 });
