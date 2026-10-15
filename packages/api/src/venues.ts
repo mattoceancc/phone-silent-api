@@ -96,6 +96,7 @@ export function windowsFor(venueId: string): QuietWindow[] {
 
 export function toPublic(row: VenueRow): PublicVenue {
   const plan: SpacePlan = hasPaidTier(row) ? "paid" : "free";
+  const windows = plan === "paid" ? windowsFor(row.id) : [];
   return {
     id: row.id,
     name: row.name,
@@ -107,9 +108,11 @@ export function toPublic(row: VenueRow): PublicVenue {
     joinCode: row.join_code,
     active: row.active === 1,
     createdAt: row.created_at,
-    windows: plan === "paid" ? windowsFor(row.id) : [],
+    windows,
     plan,
-    alwaysOn: plan === "free",
+    // Free spaces are always quiet. A paid space stays quiet at all hours
+    // until the account manager sets quiet hours.
+    alwaysOn: plan === "free" || windows.length === 0,
     polygon: plan === "paid" ? parsePolygon(row.polygon) : null,
     hasLogo: plan === "paid" && Boolean(row.logo_data),
     billingInterval:
@@ -240,7 +243,7 @@ export function createVenue(input: {
       `Free facilities can have ${FREE_SPACE_LIMIT} space. Additional spaces are paid — $39/mo or $390/yr per space.`,
     );
   }
-  const radius = plan === "free" ? FREE_RADIUS_METERS : (input.radiusMeters ?? 80);
+  const radius = plan === "free" ? FREE_RADIUS_METERS : (input.radiusMeters ?? FREE_RADIUS_METERS);
   const polygon = plan === "paid" && input.polygon ? JSON.stringify(input.polygon) : null;
   const billingInterval = storedPlan === "paid" ? (input.billingInterval ?? "month") : null;
   const logo = plan === "paid" ? (input.logoData ?? null) : null;

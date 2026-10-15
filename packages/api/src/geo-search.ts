@@ -275,7 +275,14 @@ async function searchNominatim(q: string, countrycodes?: string): Promise<GeoHit
   return parseNominatim(data);
 }
 
-function photonUrl(q: string): URL {
+export type SearchOptions = {
+  /** Typing-as-you-go suggestions: Photon (prefix-aware) first, Nominatim after. */
+  autocomplete?: boolean;
+  /** Optional bias point, e.g. the user's GPS or the space's current pin. */
+  near?: { lat: number; lng: number } | null;
+};
+
+function photonUrl(q: string, near?: { lat: number; lng: number } | null): URL {
   const url = new URL("https://photon.komoot.io/api/");
   url.searchParams.set("q", q);
   url.searchParams.set("limit", "8");
@@ -283,7 +290,11 @@ function photonUrl(q: string): URL {
   url.searchParams.set("countrycode", "us");
   url.searchParams.set("location_bias_scale", PHOTON_BIAS_SCALE);
   const state = detectUsState(q);
-  if (state) {
+  if (!state && near) {
+    url.searchParams.set("lat", near.lat.toFixed(3));
+    url.searchParams.set("lon", near.lng.toFixed(3));
+    url.searchParams.set("zoom", PHOTON_STATE_ZOOM);
+  } else if (state) {
     const [lat, lng] = STATE_CENTROIDS[state];
     url.searchParams.set("lat", lat.toFixed(2));
     url.searchParams.set("lon", lng.toFixed(2));
@@ -295,8 +306,11 @@ function photonUrl(q: string): URL {
   return url;
 }
 
-async function searchPhoton(q: string): Promise<GeoHit[]> {
-  const data = await fetchJson(photonUrl(q), {
+async function searchPhoton(
+  q: string,
+  near?: { lat: number; lng: number } | null,
+): Promise<GeoHit[]> {
+  const data = await fetchJson(photonUrl(q, near), {
     headers: { Accept: "application/json", "User-Agent": USER_AGENT },
   });
   return parsePhoton(data);
@@ -319,10 +333,21 @@ async function searchCensus(q: string): Promise<GeoHit[]> {
  * (or the US center), then the Census geocoder for street addresses
  * OpenStreetMap does not have.
  */
-export async function searchAddresses(q: string): Promise<GeoHit[]> {
+export async function searchAddresses(q: string, opts: SearchOptions = {}): Promise<GeoHit[]> {
   const raw = q.trim();
   if (raw.length < 3) return [];
   const query = normalizeRouteShorthand(raw);
+
+  if (opts.autocomplete) {
+    // Nominatim has no prefix matching ("Empire Sta" finds Empire Road) and its
+    // policy forbids autocomplete traffic, so suggestions come from Photon first.
+    try {
+      const photonHits = await searchPhoton(query, opts.near);
+      if (photonHits.length) return photonHits;
+    } catch {
+      // Fall through to the full lookup chain.
+    }
+  }
 
   try {
     const usHits = await searchNominatim(query, "us");
@@ -333,11 +358,13 @@ export async function searchAddresses(q: string): Promise<GeoHit[]> {
     // Nominatim is often rate-limited or blocked on hosted egress; try Photon.
   }
 
-  try {
-    const photonHits = await searchPhoton(query);
-    if (photonHits.length) return photonHits;
-  } catch {
-    // Photon can time out; the Census geocoder still covers US street addresses.
+  if (!opts.autocomplete) {
+    try {
+      const photonHits = await searchPhoton(query, opts.near);
+      if (photonHits.length) return photonHits;
+    } catch {
+      // Photon can time out; the Census geocoder still covers US street addresses.
+    }
   }
 
   try {
