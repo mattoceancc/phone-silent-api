@@ -192,3 +192,49 @@ describe("address search fallback", { concurrency: 1 }, () => {
     assert.deepEqual(await searchAddresses("999 Nowhere Rd"), []);
   });
 });
+
+describe("autocomplete search", { concurrency: 1 }, () => {
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  test("asks Photon first and biases toward the given point", async () => {
+    const calls: string[] = [];
+    mock.method(globalThis, "fetch", async (input: string | URL) => {
+      const url = String(input);
+      calls.push(url);
+      assert.match(url, /photon\.komoot\.io/);
+      assert.match(url, /lat=40\.748/);
+      assert.match(url, /lon=-73\.986/);
+      return jsonResponse({
+        type: "FeatureCollection",
+        features: [
+          {
+            geometry: { coordinates: [-73.9857, 40.7484] },
+            properties: { name: "Empire State Building", city: "New York", state: "New York" },
+          },
+        ],
+      });
+    });
+    const hits = await searchAddresses("Empire Sta", {
+      autocomplete: true,
+      near: { lat: 40.7484, lng: -73.9857 },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(hits[0]?.label, "Empire State Building, New York");
+  });
+
+  test("falls back to Nominatim when Photon fails", async () => {
+    const calls: string[] = [];
+    mock.method(globalThis, "fetch", async (input: string | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("photon")) throw new Error("timeout");
+      return jsonResponse([{ display_name: "Whiting, New Jersey", lat: "39.95", lon: "-74.38" }]);
+    });
+    const hits = await searchAddresses("Whiting NJ", { autocomplete: true });
+    assert.match(calls[0], /photon/);
+    assert.match(calls[1], /nominatim/);
+    assert.equal(hits[0]?.label, "Whiting, New Jersey");
+  });
+});

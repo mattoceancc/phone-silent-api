@@ -823,7 +823,19 @@ app.post("/evaluate", async (c) => {
 app.get("/geo/search", async (c) => {
   const q = c.req.query("q")?.trim();
   if (!q || q.length < 3) return c.json({ results: [] });
-  const results = await searchAddresses(q);
+  const autocomplete = c.req.query("autocomplete") === "1";
+  const lat = Number(c.req.query("lat"));
+  const lng = Number(c.req.query("lng"));
+  const near =
+    c.req.query("lat") != null &&
+    c.req.query("lng") != null &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180
+      ? { lat, lng }
+      : null;
+  const results = await searchAddresses(q, { autocomplete, near });
   return c.json({ results });
 });
 
