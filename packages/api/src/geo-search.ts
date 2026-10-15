@@ -135,9 +135,9 @@ function nominatimHeaders(): HeadersInit {
   };
 }
 
-async function fetchJson(url: URL, init?: RequestInit): Promise<unknown> {
+async function fetchJson(url: URL, init?: RequestInit, timeoutMs = 8_000): Promise<unknown> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       ...init,
@@ -306,14 +306,32 @@ function photonUrl(q: string, near?: { lat: number; lng: number } | null): URL {
   return url;
 }
 
+/** Photon's public server is sometimes unreachable; skip it for a while after a failure. */
+const PHOTON_TIMEOUT_MS = 3_000;
+const PHOTON_COOLDOWN_MS = 5 * 60_000;
+let photonDownUntil = 0;
+
+/** Test hook. */
+export function resetPhotonCooldown(): void {
+  photonDownUntil = 0;
+}
+
 async function searchPhoton(
   q: string,
   near?: { lat: number; lng: number } | null,
 ): Promise<GeoHit[]> {
-  const data = await fetchJson(photonUrl(q, near), {
-    headers: { Accept: "application/json", "User-Agent": USER_AGENT },
-  });
-  return parsePhoton(data);
+  if (Date.now() < photonDownUntil) throw new Error("Photon cooling down");
+  try {
+    const data = await fetchJson(
+      photonUrl(q, near),
+      { headers: { Accept: "application/json", "User-Agent": USER_AGENT } },
+      PHOTON_TIMEOUT_MS,
+    );
+    return parsePhoton(data);
+  } catch (err) {
+    photonDownUntil = Date.now() + PHOTON_COOLDOWN_MS;
+    throw err;
+  }
 }
 
 async function searchCensus(q: string): Promise<GeoHit[]> {
