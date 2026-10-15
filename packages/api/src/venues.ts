@@ -46,6 +46,15 @@ export function isComped(row: Pick<VenueRow, "owner_id" | "comped_at">): boolean
   return Boolean(row.comped_at) || ownerComped(row.owner_id);
 }
 
+/** True when the account is paid or comped: comped owner, or any paid/comped space. */
+export function accountHasPaidTier(ownerId: string): boolean {
+  if (ownerComped(ownerId)) return true;
+  const rows = db
+    .prepare(`SELECT plan, owner_id, comped_at FROM venues WHERE owner_id = ?`)
+    .all(ownerId) as Pick<VenueRow, "plan" | "owner_id" | "comped_at">[];
+  return rows.some((row) => hasPaidTier(row));
+}
+
 export function hasPaidTier(row: Pick<VenueRow, "plan" | "owner_id" | "comped_at">): boolean {
   return row.plan === "paid" || isComped(row);
 }
@@ -152,6 +161,8 @@ export function listVenuesForOwner(ownerId: string): PublicVenue[] {
 }
 
 export function countFreeSpaces(ownerId: string): number {
+  // Comped accounts are treated as paid: no free-space limit.
+  if (ownerComped(ownerId)) return 0;
   return freeSpaceCount(ownerId);
 }
 
