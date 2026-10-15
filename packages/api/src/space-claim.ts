@@ -3,8 +3,6 @@ import type { Coordinates } from "@phone-silent/shared";
 import { db } from "./db";
 import { configuredWebOrigin } from "./origins";
 
-const ADDRESS_MATCH_METERS = 150;
-
 /** "mattoceancc@gmail.com" -> "ma•••@gmail.com". The owner's address is never shown in full. */
 export function maskEmail(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -105,18 +103,27 @@ export function isPlaceholderAddress(value: string | null | undefined): boolean 
   );
 }
 
-/** Same building: inside the quiet zone, or the same address within a short walk. */
-function samePlace(row: ClaimRow, lat: number, lng: number, address: string): boolean {
+/**
+ * Inside the existing space's real quiet zone, and nothing wider:
+ * - paid space with a polygon: the polygon only (not its covering circle);
+ * - free space: the 125 ft (FREE_RADIUS_METERS) circle;
+ * - paid circle space: its own radius.
+ * The iOS 100 m monitored/approach ring and address text never cause a conflict.
+ */
+export function insideRealZone(
+  row: Pick<ClaimRow, "lat" | "lng" | "radius_meters" | "plan" | "polygon">,
+  lat: number,
+  lng: number,
+): boolean {
   const point = { lat, lng };
-  const center = { lat: row.lat, lng: row.lng };
   const polygon = row.plan === "paid" ? polygonOf(row.polygon) : null;
-  if (polygon && isInsidePolygon(point, polygon)) return true;
-  const distance = distanceMeters(center, point);
-  if (distance <= Math.max(row.radius_meters, FREE_RADIUS_METERS)) return true;
-  if (isPlaceholderAddress(row.address) || isPlaceholderAddress(address)) return false;
-  const left = normalizeAddress(row.address);
-  const right = normalizeAddress(address);
-  return left.length >= 8 && left === right && distance <= ADDRESS_MATCH_METERS;
+  if (polygon) return isInsidePolygon(point, polygon);
+  const radius = row.plan === "paid" ? Number(row.radius_meters) : FREE_RADIUS_METERS;
+  return distanceMeters({ lat: row.lat, lng: row.lng }, point) <= radius;
+}
+
+function samePlace(row: ClaimRow, lat: number, lng: number): boolean {
+  return insideRealZone(row, lat, lng);
 }
 
 /**
@@ -142,7 +149,7 @@ export function evaluateSpaceClaim(input: {
   const matches = rows.filter(
     (row) =>
       row.id !== input.exceptVenueId &&
-      samePlace(row, input.lat, input.lng, input.address),
+      samePlace(row, input.lat, input.lng),
   );
   const released = (row: ClaimRow) => Number(row.claim_released) === 1;
   if (matches.some((row) => row.owner_id === input.ownerId && !released(row))) {
@@ -196,7 +203,7 @@ export function findOwnSameSpace(input: {
   const hit = rows.find(
     (row) =>
       normalizeAddress(row.name) === wanted &&
-      samePlace(row, input.lat, input.lng, input.address),
+      samePlace(row, input.lat, input.lng),
   );
   return hit?.id ?? null;
 }
